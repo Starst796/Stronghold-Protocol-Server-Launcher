@@ -286,9 +286,12 @@ const actions = {
 
   open(target) {
     const cfg = config;
-    if (target === 'folder') { openFolder(gameDir(cfg)); return { ok: true }; }
-    if (target === 'launcher-folder') { openFolder(ROOT); return { ok: true }; }
-    if (target === 'game') { openExternal(`http://localhost:${cfg.port}`); return { ok: true }; }
+    if (target === 'folder' || target === 'launcher-folder') {
+      const dir = target === 'folder' ? gameDir(cfg) : ROOT;
+      const ok = openFolder(dir);
+      return ok ? { ok: true, path: dir } : { ok: false, error: `无法打开目录（不存在或被系统拒绝）：${dir}` };
+    }
+    if (target === 'game') { openExternal(`http://localhost:${cfg.port}`); return { ok: true, url: `http://localhost:${cfg.port}` }; }
     if (target === 'repo') { openExternal('https://github.com/sganggs/Stronghold-Protocol'); return { ok: true }; }
     if (target === 'releases') { openExternal('https://github.com/sganggs/Stronghold-Protocol/releases'); return { ok: true }; }
     if (target === 'issues') { openExternal('https://github.com/sganggs/Stronghold-Protocol/issues'); return { ok: true }; }

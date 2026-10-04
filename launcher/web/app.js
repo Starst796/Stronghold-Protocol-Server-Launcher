@@ -457,7 +457,11 @@ async function doServer(path) {
 }
 
 async function doOpen(target) {
-  try { await api('/api/open', 'POST', { target }); } catch (e) { toast(e.message, 'error'); }
+  try {
+    const r = await api('/api/open', 'POST', { target });
+    if (r && r.ok === false) toast(r.error || '打开失败', 'warn', 6000);
+    else if (r && r.path) toast(`已打开：${r.path}`, 'ok', 3000);
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 async function testSources() {

@@ -174,15 +174,26 @@ export function killTree(pid, sig = 'SIGTERM') {
   try { process.kill(pid, sig); } catch { /* gone */ }
 }
 
-/** Spawn a detached, fire-and-forget helper process. */
-function spawnIgnore(cmd, args) {
+/**
+ * Spawn a detached, fire-and-forget helper process.
+ *
+ * `windowsHide` maps to CreateProcess's CREATE_NO_WINDOW. Keep it ON for console helpers
+ * (rundll32, cmd) so no console window flashes — but keep it OFF when the spawned process is
+ * the one that *creates the visible window*: `spawn('explorer', [dir], { windowsHide: true })`
+ * yields an Explorer window that exists in the shell's window list yet is never displayed, so
+ * from the user's point of view the folder simply "does not open".
+ */
+function spawnIgnore(cmd, args, { windowsHide = true } = {}) {
   try {
-    const child = spawn(cmd, args, { stdio: 'ignore', detached: true, windowsHide: true });
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true, windowsHide });
     child.on('error', () => {});
     child.unref();
     return true;
   } catch { return false; }
 }
+
+/** Characters cmd.exe would re-parse if we routed the path through `cmd /c start`. */
+const CMD_UNSAFE = /[&^<>|%"()]/;
 
 /** Open a URL in the user's default browser. */
 export function openExternal(url) {
@@ -192,10 +203,18 @@ export function openExternal(url) {
   return spawnIgnore('xdg-open', [url]);
 }
 
-/** Open a folder in the OS file manager. */
+/**
+ * Open a folder in the OS file manager.
+ * On Windows this goes through `cmd /c start ""` so the window is both visible and brought to
+ * the foreground; a bare explorer.exe ends up hidden (with windowsHide) or stays behind.
+ * Paths containing cmd metacharacters fall back to explorer.exe with a visible window.
+ */
 export function openFolder(dir) {
   if (!exists(dir)) return false;
-  if (IS_WIN) return spawnIgnore('explorer', [dir]);
+  if (IS_WIN) {
+    if (CMD_UNSAFE.test(dir)) return spawnIgnore('explorer', [dir], { windowsHide: false });
+    return spawnIgnore('cmd', ['/c', 'start', '', dir]);
+  }
   if (IS_MAC) return spawnIgnore('open', [dir]);
   return spawnIgnore('xdg-open', [dir]);
 }
