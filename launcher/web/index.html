@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>卫戍协议：盟约 · 服务器启动器</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232ea44f'/%3E%3Cpath d='M16 6l8 4v7c0 5-3.4 8.4-8 9-4.6-.6-8-4-8-9v-7z' fill='%23fff'/%3E%3C/svg%3E">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">SP</span>
+      <span class="brand-text">
+        <b>卫戍协议：盟约</b>
+        <small>服务器启动器</small>
+      </span>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item active" data-page="home">
+        <svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1z"/></svg>
+        <span>主界面</span>
+      </button>
+      <button class="nav-item" data-page="config">
+        <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm8.4 4a6.6 6.6 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a6.7 6.7 0 0 0-1.7-1L15.8 3h-3.9l-.4 2.6a6.7 6.7 0 0 0-1.7 1l-2.4-1-2 3.4L5.5 11a6.6 6.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1c.5.4 1.1.8 1.7 1l.4 2.6h3.9l.4-2.6c.6-.2 1.2-.6 1.7-1l2.4 1 2-3.4-2-1.6c.1-.3.1-.7.1-1z"/></svg>
+        <span>配置</span>
+      </button>
+      <button class="nav-item" data-page="terminal">
+        <svg viewBox="0 0 24 24"><path d="M3 4h18a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm3.7 5.3L5.3 10.7 8.6 14l-3.3 3.3 1.4 1.4L11.4 14zM12 17h7v-2h-7z"/></svg>
+        <span>终端</span>
+        <em class="pill" id="nav-task" hidden></em>
+      </button>
+      <button class="nav-item" data-page="about">
+        <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 15h-2v-6h2zm0-8h-2V7h2z"/></svg>
+        <span>关于</span>
+      </button>
+    </nav>
+
+    <div class="side-foot">
+      <div class="status-line">
+        <span class="dot" id="side-dot"></span>
+        <span id="side-status">未运行</span>
+      </div>
+      <div class="side-meta" id="side-meta">启动器 v—</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h1 id="page-title">主界面</h1>
+      <div class="top-badges">
+        <span class="badge" id="badge-version" title="已安装的游戏版本">版本 —</span>
+        <span class="badge" id="badge-update" hidden></span>
+        <span class="badge badge-server" id="badge-server">未运行</span>
+      </div>
+    </header>
+
+    <div class="content" id="content">
+
+      <!-- ============================ 主界面 ============================ -->
+      <section class="page active" id="page-home">
+        <div class="card" id="card-deploy">
+          <div class="card-head">
+            <h2>部署状态</h2>
+            <div class="card-head-actions">
+              <button class="btn ghost sm" data-action="refresh">刷新状态</button>
+            </div>
+          </div>
+          <div class="status-grid" id="status-grid"></div>
+          <div class="hint" id="deploy-hint"></div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head"><h2>一键操作</h2></div>
+            <div class="actions">
+              <button class="btn primary lg" id="btn-main">一键部署</button>
+              <button class="btn success lg" id="btn-start" disabled>启动服务器</button>
+              <button class="btn danger lg" id="btn-stop" disabled>停止服务器</button>
+              <button class="btn ghost lg" id="btn-restart" disabled>重启</button>
+              <button class="btn ghost" data-action="open" data-target="game">打开游戏页面</button>
+              <button class="btn ghost" data-action="open" data-target="folder">打开安装目录</button>
+            </div>
+            <div class="sub-actions">
+              <button class="btn ghost sm" data-deploy="repair">修复安装</button>
+              <button class="btn ghost sm" data-deploy="deps">只装依赖</button>
+              <button class="btn ghost sm" data-deploy="assets">只下素材</button>
+              <button class="btn ghost sm" data-deploy="doctor">环境诊断</button>
+              <button class="btn ghost sm danger-ghost" id="btn-cancel" hidden>取消任务</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2>下载源</h2>
+              <div class="card-head-actions">
+                <button class="btn ghost sm" id="btn-test-sources">测试连通性</button>
+              </div>
+            </div>
+            <div class="field">
+              <select id="source-select"></select>
+            </div>
+            <p class="hint" id="source-desc"></p>
+            <ul class="source-results" id="source-results"></ul>
+            <p class="fine">部分网络无法直连 github.com，可切换到加速镜像。素材下载由游戏内置的 GitHub → jsDelivr 回退逻辑负责。</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>版本与更新</h2>
+            <div class="card-head-actions">
+              <button class="btn ghost sm" data-action="check-update">检查更新</button>
+              <button class="btn ghost sm" data-action="deep-check">检查并列出待更新提交</button>
+            </div>
+          </div>
+          <div class="version-row" id="version-row"></div>
+          <div class="incoming" id="incoming"></div>
+          <div class="update-actions">
+            <button class="btn primary" id="btn-update" hidden>立即更新</button>
+            <label class="check"><input type="checkbox" id="force-update"> 强制更新（丢弃本地修改）</label>
+          </div>
+        </div>
+
+        <div class="card" id="card-share">
+          <div class="card-head"><h2>分享给朋友</h2></div>
+          <div id="share-list" class="share-list"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>更新历史</h2></div>
+          <div id="history" class="history"></div>
+        </div>
+      </section>
+
+      <!-- ============================ 配置 ============================ -->
+      <section class="page" id="page-config">
+        <div class="card">
+          <div class="card-head">
+            <h2>启动预设</h2>
+            <div class="card-head-actions">
+              <button class="btn ghost sm" id="btn-save-preset">保存当前为预设</button>
+            </div>
+          </div>
+          <div class="presets" id="presets"></div>
+          <p class="fine">预设会写入下方「端口与运行模式」的各项设置（对应游戏 README 的「端口与配置」表）。</p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>端口与运行模式</h2></div>
+          <div class="form-grid">
+            <label class="field"><span>端口 <code>PORT</code></span><input type="number" min="1" max="65535" id="cfg-port"></label>
+            <label class="field"><span>监听地址 <code>HOST</code></span>
+              <select id="cfg-host">
+                <option value="0.0.0.0">0.0.0.0（允许局域网 / 公网访问）</option>
+                <option value="127.0.0.1">127.0.0.1（只允许本机）</option>
+                <option value="::">::（全部 IPv6）</option>
+              </select>
+            </label>
+            <label class="field"><span>战斗模拟 <code>SP_COMBAT</code></span>
+              <select id="cfg-combat">
+                <option value="client">client（各玩家浏览器模拟，推荐）</option>
+                <option value="server">server（服务器模拟并推流，更吃 CPU）</option>
+              </select>
+            </label>
+            <label class="field"><span>结果复算 <code>SP_VERIFY</code></span>
+              <select id="cfg-verify">
+                <option value="off">off（不复算）</option>
+                <option value="sample">sample（约 1/8 抽查）</option>
+                <option value="all">all（全部复算，最耗 CPU）</option>
+              </select>
+            </label>
+            <label class="field"><span>转发头信任 <code>TRUST_PROXY</code></span>
+              <select id="cfg-trust">
+                <option value="auto">auto（只信任本机 / 内网代理）</option>
+                <option value="1">1（总是信任，反向代理后用）</option>
+                <option value="0">0（从不信任）</option>
+              </select>
+            </label>
+            <label class="field check-field"><span>详细日志 <code>DEBUG</code></span>
+              <input type="checkbox" id="cfg-debug">
+            </label>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>下载与更新</h2></div>
+          <div class="form-grid">
+            <label class="field"><span>下载源</span>
+              <select id="cfg-source"></select>
+            </label>
+            <label class="field"><span>素材并发数（1–64）</span><input type="number" min="1" max="64" id="cfg-concurrency"></label>
+            <label class="field check-field"><span>打开启动器时自动检查更新</span><input type="checkbox" id="cfg-autocheck"></label>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>启动行为与安装位置</h2></div>
+          <div class="form-grid">
+            <label class="field check-field"><span>启动服务器后自动打开浏览器</span><input type="checkbox" id="cfg-open-browser"></label>
+            <label class="field check-field"><span>打开启动器时自动启动服务器</span><input type="checkbox" id="cfg-autostart"></label>
+            <label class="field wide"><span>安装目录（留空则使用启动器目录下的 <code>game/</code>）</span><input type="text" id="cfg-install-dir" spellcheck="false"></label>
+          </div>
+          <div class="admin-actions">
+            <button class="btn ghost sm" data-action="open" data-target="folder">打开安装目录</button>
+            <button class="btn ghost sm" data-action="open" data-target="launcher-folder">打开启动器目录</button>
+          </div>
+        </div>
+
+        <div class="save-bar">
+          <button class="btn primary" id="btn-save-config">保存配置</button>
+          <button class="btn ghost" id="btn-reset-config">恢复默认</button>
+          <span class="save-msg" id="save-msg"></span>
+        </div>
+      </section>
+
+      <!-- ============================ 终端 ============================ -->
+      <section class="page" id="page-terminal">
+        <div class="terminal-wrap">
+          <div class="term-toolbar">
+            <div class="term-filters" id="term-filters">
+              <button class="chip active" data-channel="all">全部</button>
+              <button class="chip" data-channel="deploy">部署</button>
+              <button class="chip" data-channel="server">服务器</button>
+              <button class="chip" data-channel="update">更新</button>
+              <button class="chip" data-channel="launcher">启动器</button>
+            </div>
+            <div class="term-tools">
+              <label class="check sm"><input type="checkbox" id="term-autoscroll" checked> 自动滚动</label>
+              <button class="btn ghost sm" id="term-clear">清空</button>
+              <button class="btn ghost sm" id="term-export">导出日志</button>
+            </div>
+          </div>
+          <div class="term-progress" id="term-progress" hidden>
+            <div class="bar"><div class="bar-fill" id="term-bar"></div></div>
+            <span id="term-progress-text"></span>
+          </div>
+          <div class="term" id="term" tabindex="0"></div>
+        </div>
+      </section>
+
+      <!-- ============================ 关于 ============================ -->
+      <section class="page" id="page-about">
+        <div class="card">
+          <div class="card-head"><h2>启动器</h2></div>
+          <div class="about-grid">
+            <div><span class="k">名称</span><span class="v">卫戍协议：盟约 · 服务器启动器</span></div>
+            <div><span class="k">版本</span><span class="v" id="about-launcher-version">—</span></div>
+            <div><span class="k">运行环境</span><span class="v" id="about-env">—</span></div>
+            <div><span class="k">Node 可执行文件</span><span class="v mono" id="about-node-path">—</span></div>
+            <div><span class="k">启动器目录</span><span class="v mono" id="about-root">—</span></div>
+            <div><span class="k">安装目录</span><span class="v mono" id="about-install">—</span></div>
+            <div><span class="k">依赖工具</span><span class="v" id="about-tools">—</span></div>
+          </div>
+          <p class="fine">启动器使用 Node.js 标准库实现，不需要额外依赖；界面通过本机 <code>127.0.0.1</code> 上的控制面板提供，所有操作都在你自己的电脑上完成。</p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>游戏项目</h2></div>
+          <p class="fine">「卫戍协议：盟约」是《明日方舟》季节性自走棋塔防玩法的<b>非官方同人复刻</b>：浏览器即开即玩，单人或 1–4 人联机合作。本启动器只是帮你下载、更新与启动它，素材与代码版权归原作者及原权利人所有。</p>
+          <div class="link-row">
+            <button class="btn ghost sm" data-action="open" data-target="repo">GitHub 仓库</button>
+            <button class="btn ghost sm" data-action="open" data-target="releases">Releases</button>
+            <button class="btn ghost sm" data-action="open" data-target="issues">反馈 Issue</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>开发信息</h2></div>
+          <div class="about-grid">
+            <div><span class="k">启动器作者</span><span class="v">Starst</span></div>
+            <div><span class="k">技术栈</span><span class="v">Node.js 22+ · 原生 http · Server-Sent Events · 零依赖前端</span></div>
+            <div><span class="k">支持平台</span><span class="v">Windows · macOS · Linux</span></div>
+            <div><span class="k">许可证</span><span class="v">GPL-3.0-or-later（启动器本身）</span></div>
+          </div>
+          <p class="fine">作者：Starst · 如果你觉得这个启动器好用，请把 Star 留给上游项目 <a href="#" data-action="open" data-target="repo">sganggs/Stronghold-Protocol</a>。</p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>免责声明</h2></div>
+          <p class="fine">
+            本项目为玩家自制的非官方同人作品，与上海鹰角网络科技有限公司（Hypergryph）、Yostar 及其关联方没有任何关系，未获其授权或认可。
+            《明日方舟》及「卫戍协议」相关的名称、角色、美术、音乐、音效、文本与数据等素材，版权归原权利人所有，<b>不适用</b> GPL 许可证。
+            仅供学习交流与个人非商业使用，<b>严禁任何形式的盈利</b>。请勿将素材用于本项目以外的用途或单独再分发。
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>完整更新历史</h2></div>
+          <div id="about-changelog" class="history"></div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<div class="modal" id="modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head"><h3 id="modal-title">提示</h3><button class="btn ghost sm" id="modal-close">关闭</button></div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

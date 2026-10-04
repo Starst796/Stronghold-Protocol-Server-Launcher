@@ -1,0 +1,16 @@
+{
+  "name": "stronghold-protocol-server-launcher",
+  "version": "1.0.0",
+  "private": true,
+  "description": "卫戍协议：盟约 · 跨平台一键服务器启动器（Windows / macOS / Linux）",
+  "type": "module",
+  "main": "launcher/index.mjs",
+  "scripts": {
+    "start": "node launcher/index.mjs",
+    "dev": "node --watch launcher/index.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "GPL-3.0-or-later"
+}

@@ -1,0 +1,12 @@
+node_modules/
+game/
+.cache/
+runtime/node/
+runtime/_unzip/
+runtime/.download-*
+runtime/node-*.zip
+launcher.config.json
+launcher.log
+*.log
+.DS_Store
+Thumbs.db
