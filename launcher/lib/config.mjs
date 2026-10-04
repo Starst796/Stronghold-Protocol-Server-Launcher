@@ -76,6 +76,14 @@ export const SOURCES = [
     archive: `https://codeload.github.com/${REPO_SLUG}/tar.gz/refs/heads/${BRANCH}`,
     raw: `https://raw.githubusercontent.com/${REPO_SLUG}/${BRANCH}/`,
   },
+  {
+    id: 'gitee-starst796',
+    label: 'Gitee 镜像（Starst796）',
+    desc: 'gitee.com 镜像，国内访问稳定，但更新可能滞后。',
+    git: `https://gitee.com/Starst796/Stronghold-Protocol.git`,
+    archive: `https://gitee.com/Starst796/Stronghold-Protocol/repository/archive/master.tar.gz`,
+    raw: `https://gitee.com/Starst796/Stronghold-Protocol/raw/master/`,
+  }
 ];
 
 export const sourceById = (id) => SOURCES.find((s) => s.id === id) || SOURCES[0];
