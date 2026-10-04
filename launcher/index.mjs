@@ -24,7 +24,7 @@ import {
   checkSelf as checkSelfUpdate, applySelf, selfHistory, selfVersion, selfRemote, selfBranch, isSelfRepo,
 } from './lib/selfupdate.mjs';
 import {
-  exists, openExternal, openFolder, localAddresses, hasCommand, runCapture, fetchWithTimeout, nowIso, IS_WIN, IS_MAC, IS_LINUX,
+  exists, openExternal, openFolder, localAddresses, hasCommand, runCapture, fetchWithTimeout, nowIso, prependPath, IS_WIN, IS_MAC, IS_LINUX,
 } from './lib/util.mjs';
 
 const LAUNCHER_VERSION = selfVersion() || '1.0.0';
@@ -130,6 +130,7 @@ const toast = (message, level = 'info') => bus.emit({ type: 'toast', message, le
 
 const nodeStep = (label, args, dir, extra = {}) => ({
   label, cmd: process.execPath, args, cwd: dir, ...extra,
+  env: prependPath(path.dirname(process.execPath), { ...process.env, ...extra.env }),
 });
 
 function deploySteps(action) {

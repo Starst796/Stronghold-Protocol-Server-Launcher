@@ -34,6 +34,12 @@ export function writeJsonAtomic(p, value) {
 
 export function mkdirp(p) { fs.mkdirSync(p, { recursive: true }); return p; }
 
+/** Return an environment with a directory prepended to PATH, preserving its key casing on Windows. */
+export function prependPath(dir, env = process.env) {
+  const key = Object.keys(env).find((name) => name.toLowerCase() === 'path') || 'PATH';
+  return { ...env, [key]: [dir, env[key]].filter(Boolean).join(path.delimiter) };
+}
+
 /** Human-readable byte size. */
 export function formatBytes(n) {
   if (!Number.isFinite(n) || n < 0) return '?';
