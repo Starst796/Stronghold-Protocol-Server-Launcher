@@ -24,7 +24,7 @@ import {
   checkSelf as checkSelfUpdate, applySelf, selfHistory, selfVersion, selfRemote, selfBranch, isSelfRepo,
 } from './lib/selfupdate.mjs';
 import {
-  exists, openExternal, openFolder, localAddresses, hasCommand, runCapture, fetchWithTimeout, nowIso, prependPath, IS_WIN, IS_MAC, IS_LINUX,
+  exists, openExternal, openFolder, localAddresses, hasCommand, runCapture, fetchWithTimeout, nowIso, prependPath, gitInstallHint, IS_WIN, IS_MAC, IS_LINUX,
 } from './lib/util.mjs';
 
 const LAUNCHER_VERSION = selfVersion() || '1.0.0';
@@ -91,6 +91,7 @@ function refreshInstall() {
 }
 
 function buildState() {
+  const hasGit = hasCommand('git');
   return {
     launcher: {
       version: LAUNCHER_VERSION,
@@ -101,7 +102,8 @@ function buildState() {
       arch: process.arch,
       root: ROOT,
       installDir: installDirOf(config),
-      hasGit: hasCommand('git'),
+      hasGit,
+      gitInstall: hasGit ? null : gitInstallHint(),
       hasNpm: !!npmCommand(),
       hasTar: hasCommand('tar'),
       uptimeSec: Math.round(process.uptime()),
@@ -411,6 +413,10 @@ function printBanner(url) {
   console.log(`  下载源：  ${sourceById(config.downloadSource).label}`);
   console.log(`  浏览器未自动打开？请手动访问上面的地址。`);
   console.log(`  按 Ctrl+C 退出启动器（同时会停止它启动的游戏服务器）。`);
+  if (!hasCommand('git')) {
+    console.log(`  ⚠ 未检测到 git：游戏仍可用压缩包方式部署，但启动器无法自动更新。`);
+    console.log(`    安装 git 后即可开启启动器自更新：https://git-scm.com/downloads`);
+  }
   console.log(`${line}\n`);
 }
 

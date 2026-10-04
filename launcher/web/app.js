@@ -10,6 +10,10 @@ let S = null;
 let configDirty = false;
 let history = { changelog: [], commits: [] };
 
+// Non-blocking "git not found" notice — dismissed for this browser once the user opts out.
+const GIT_NOTICE_KEY = 'sp.gitNotice.dismissed';
+let gitNoticeRendered = null;
+
 // ------------------------------------------------------------------ tiny API client
 async function api(path, method = 'GET', body) {
   const res = await fetch(path, {
@@ -221,6 +225,30 @@ function renderShell() {
 }
 
 // ------------------------------------------------------------------ render: home
+function renderGitNotice() {
+  const el = $('#git-notice');
+  if (!el) return;
+  const launcher = S.launcher || {};
+  let dismissed = false;
+  try { dismissed = localStorage.getItem(GIT_NOTICE_KEY) === '1'; } catch { /* private mode */ }
+  const show = !launcher.hasGit && !dismissed;
+  el.hidden = !show;
+  if (!show) { gitNoticeRendered = null; return; }
+
+  const hint = launcher.gitInstall || {};
+  const cmds = hint.commands || [];
+  const primary = cmds[0];
+  const detail = primary
+    ? `游戏仍可用压缩包方式部署，但启动器无法自动更新。安装 git 即可开启自更新，例如 <code>${escapeHtml(primary.cmd)}</code>。`
+    : '游戏仍可用压缩包方式部署，但启动器无法自动更新。安装 git 后即可开启自更新。';
+  if (detail !== gitNoticeRendered) {
+    $('#git-notice-detail').innerHTML = detail;
+    gitNoticeRendered = detail;
+  }
+  el.dataset.cmd = cmds.map((c) => c.cmd).join('\n');
+  el.dataset.url = hint.url || 'https://git-scm.com/downloads';
+}
+
 function renderHome() {
   const { install, server, task, version, config, launcher } = S;
 
@@ -251,7 +279,7 @@ function renderHome() {
   if (!install.exists) hints.push('还没有下载游戏 —— 选择一个下载源，然后点「一键部署」。');
   else if (!install.ready) hints.push('安装不完整，点「一键部署」会自动补全依赖与素材（可中断续传）。');
   else if (install.assets.known && install.assets.missing > 0) hints.push('素材可能不完整，点「修复安装」或「只下素材」继续下载（会续传已完成的文件）。');
-  if (install.hasPackageJson && !launcher.hasGit) hints.push('未检测到 git：将以压缩包方式下载，更新历史会相对有限。');
+  if (install.hasPackageJson && !launcher.hasGit) hints.push('未检测到 git：仍可用压缩包方式部署，但启动器无法自动更新；安装 git 后即可开启自更新。');
   if (install.hasPackageJson && !launcher.hasNpm) hints.push('未检测到 npm：无法安装依赖，请先安装 Node.js（含 npm）。');
   $('#deploy-hint').textContent = hints.join(' ');
 
@@ -536,6 +564,7 @@ function renderTaskProgress() {
 function render() {
   if (!S) return;
   renderShell();
+  renderGitNotice();
   renderHome();
   renderSelf();
   renderConfig();
@@ -780,6 +809,20 @@ function wire() {
     const term = $('#term');
     const atBottom = term.scrollHeight - term.scrollTop - term.clientHeight < 24;
     if (!atBottom && autoScroll) { autoScroll = false; $('#term-autoscroll').checked = false; }
+  });
+
+  // ---- git notice banner
+  $('#git-notice-copy').addEventListener('click', () => {
+    const el = $('#git-notice');
+    const text = el.dataset.cmd || el.dataset.url || '';
+    navigator.clipboard?.writeText(text).then(() => toast('已复制安装命令', 'ok'), () => toast('复制失败，请手动复制', 'warn'));
+  });
+  $('#git-notice-open').addEventListener('click', () => {
+    window.open($('#git-notice').dataset.url, '_blank', 'noopener');
+  });
+  $('#git-notice-close').addEventListener('click', () => {
+    try { localStorage.setItem(GIT_NOTICE_KEY, '1'); } catch { /* ignore */ }
+    $('#git-notice').hidden = true;
   });
 
   window.addEventListener('beforeunload', () => {});

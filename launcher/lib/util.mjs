@@ -99,6 +99,44 @@ export function which(cmd) {
 
 export const hasCommand = (cmd) => which(cmd) !== null;
 
+/**
+ * Platform-specific ways to install git, shown when `git` is missing.
+ * The launcher never installs system software itself — these are commands the user runs,
+ * or a download page to follow.
+ */
+export function gitInstallHint() {
+  if (IS_WIN) {
+    return {
+      platform: 'Windows',
+      url: 'https://git-scm.com/download/win',
+      commands: [
+        { label: 'winget', cmd: 'winget install --id Git.Git -e --source winget' },
+        { label: 'scoop', cmd: 'scoop install git' },
+        { label: 'Chocolatey', cmd: 'choco install git -y' },
+      ],
+    };
+  }
+  if (IS_MAC) {
+    return {
+      platform: 'macOS',
+      url: 'https://git-scm.com/download/mac',
+      commands: [
+        { label: 'Homebrew', cmd: 'brew install git' },
+        { label: 'Xcode 命令行工具', cmd: 'xcode-select --install' },
+      ],
+    };
+  }
+  return {
+    platform: IS_LINUX ? 'Linux' : process.platform,
+    url: 'https://git-scm.com/download/linux',
+    commands: [
+      { label: 'Debian / Ubuntu', cmd: 'sudo apt install git' },
+      { label: 'Fedora / RHEL', cmd: 'sudo dnf install git' },
+      { label: 'Arch', cmd: 'sudo pacman -S git' },
+    ],
+  };
+}
+
 /** `npm` is a `.cmd`/shell shim on Windows; Node ≥ 18.20 refuses to spawn it without a shell. */
 export function needsShell(cmd) { return IS_WIN && /\.(cmd|bat)$/i.test(cmd); }
 

@@ -59,6 +59,18 @@
 
     <div class="content" id="content">
 
+      <div class="notice notice-warn" id="git-notice" hidden>
+        <div class="notice-text">
+          <b>未检测到 git</b>
+          <span id="git-notice-detail"></span>
+        </div>
+        <div class="notice-actions">
+          <button class="btn ghost sm" id="git-notice-copy">复制安装命令</button>
+          <button class="btn ghost sm" id="git-notice-open">下载页面</button>
+          <button class="btn ghost sm" id="git-notice-close" title="不再显示此提示">不再提示</button>
+        </div>
+      </div>
+
       <!-- ============================ 主界面 ============================ -->
       <section class="page active" id="page-home">
         <div class="card" id="card-deploy">
