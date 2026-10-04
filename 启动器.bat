@@ -1,8 +1,8 @@
 @echo off
+chcp 65001 >nul
 rem  卫戍协议：盟约 · 服务器启动器 —— Windows 入口
 rem  双击本文件即可运行。若没装 Node.js，会优先使用 runtime\ 里自带的安装包，
 rem  找不到时自动从官网下载再安装，装好后继续启动。
-chcp 65001 >nul
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 set "ROOT=%~dp0"

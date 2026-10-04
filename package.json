@@ -1,6 +1,6 @@
 {
   "name": "stronghold-protocol-server-launcher",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "卫戍协议：盟约 · 跨平台一键服务器启动器（Windows / macOS / Linux）",
   "type": "module",
