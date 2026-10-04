@@ -23,6 +23,14 @@ export const REPO_URL = `https://github.com/${REPO_SLUG}`;
 export const BRANCH = 'master';
 
 /**
+ * The launcher's *own* repository, used for self-update. A public HTTPS URL is the default on
+ * purpose: an SSH remote (`git@github.com:…`) would only work for the machine that owns the key,
+ * so nobody else could ever auto-update.
+ */
+export const SELF_REPO_SLUG = 'Starst796/Stronghold-Protocol-Server-Launcher';
+export const SELF_REPO_URL = `https://github.com/${SELF_REPO_SLUG}`;
+
+/**
  * Download sources. Direct github.com git access is blocked on some networks,
  * so several community mirrors are offered; the UI can probe them ("测试速度").
  * `git` = clone URL, `archive` = tar.gz of the branch (no git needed).
@@ -133,6 +141,8 @@ export const DEFAULT_CONFIG = {
   openBrowser: true,
   autoStart: false,          // start the server as soon as the launcher opens
   autoUpdateCheck: true,     // check GitHub for updates on open
+  autoUpdateSelf: true,      // update the launcher itself from its own repo at startup
+  selfRepoUrl: SELF_REPO_URL, // public HTTPS by default so every user can self-update
   assetConcurrency: 16,      // tools/fetch-assets.mjs --concurrency
   activePreset: 'default',
   customPresets: {},
@@ -148,6 +158,8 @@ const COERCE = {
   openBrowser: (v) => v !== false,
   autoStart: (v) => !!v,
   autoUpdateCheck: (v) => v !== false,
+  autoUpdateSelf: (v) => v !== false,
+  selfRepoUrl: (v) => String(v || '').trim(),
   assetConcurrency: (v) => Math.min(64, Math.max(1, Number(v) || 16)),
   installDir: (v) => String(v || ''),
   downloadSource: (v) => (SOURCES.some((s) => s.id === v) ? String(v) : 'github'),

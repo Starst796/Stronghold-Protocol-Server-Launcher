@@ -241,10 +241,31 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .entry .ver { font-weight: 650; font-family: var(--mono); }
 .entry .date { color: var(--text-faint); font-size: 11.5px; margin-left: auto; font-family: var(--mono); }
 .entry .body { padding: 4px 14px 14px 28px; color: var(--text-dim); font-size: 12.5px; white-space: pre-wrap; }
-.commit-list { display: flex; flex-direction: column; gap: 3px; }
+/* An expanded entry can be very long (the 0.1.1 notes have 70+ bullets), which used to stretch the
+   card so far that the rest of the page became hard to reach. Cap the height and give the block its
+   own scrollbar instead. */
+.entry > .body { max-height: min(340px, 55vh); overflow: auto; overscroll-behavior: contain; }
+.commit-list { display: flex; flex-direction: column; gap: 3px; list-style: none; margin: 0; padding: 0; }
 .commit { display: flex; gap: 10px; font-size: 12px; font-family: var(--mono); color: var(--text-dim); }
 .commit .hash { color: var(--accent-2); }
 .commit .cdate { color: var(--text-faint); margin-left: auto; }
+
+/* Markdown-rendered update notes (CHANGELOG.md) */
+.md { color: var(--text-dim); font-size: 12.5px; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md h2 { font-size: 14px; margin: 12px 0 6px; color: var(--text); }
+.md h3 { font-size: 13px; margin: 12px 0 6px; color: var(--accent-2); font-weight: 650; }
+.md h4, .md h5, .md h6 { font-size: 12.5px; margin: 10px 0 4px; color: var(--text); }
+.md p { margin: 6px 0; }
+.md ul, .md ol { margin: 4px 0 8px; padding-left: 20px; }
+.md li { margin: 3px 0; }
+.md li::marker { color: var(--text-faint); }
+.md strong { color: var(--text); font-weight: 650; }
+.md code { font-size: .92em; }
+.md hr { border: 0; border-top: 1px solid var(--border-soft); margin: 10px 0; }
+.entry .body.md { white-space: normal; }
+.card.highlight { border-color: rgba(210, 153, 34, .5); box-shadow: 0 0 0 1px rgba(210, 153, 34, .16); }
 
 /* ------------------------------------------------- terminal */
 .terminal-wrap { display: flex; flex-direction: column; height: 100%; gap: 0; }

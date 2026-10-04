@@ -121,6 +121,15 @@ async function api(req, res, url, { getState, actions, logStore }) {
     case 'GET /api/history':
       return sendJson(res, 200, actions.getHistory());
 
+    case 'POST /api/self/check':
+      return sendJson(res, 200, await actions.checkSelf(body?.deep === true));
+
+    case 'POST /api/self/update':
+      return sendJson(res, 200, await actions.updateSelf(body?.force === true));
+
+    case 'POST /api/self/restart':
+      return sendJson(res, 200, actions.restartSelf());
+
     case 'GET /api/changelog':
       return sendJson(res, 200, { changelog: actions.getChangelog() });
 

@@ -91,6 +91,60 @@ function ansiToHtml(input, st = { fg: null, bold: false, dim: false, underline: 
   return out;
 }
 
+// ------------------------------------------------------------------ Markdown (changelog)
+// The update history is Markdown (headings, lists, links, `code`, **bold**). Rendering it as
+// raw text made the announcements unreadable, so a small, strictly-escaping renderer keeps it
+// legible. Everything is HTML-escaped first — the text comes from a git repository.
+
+function mdInline(text) {
+  const codes = [];
+  let s = escapeHtml(text).replace(/`([^`]+)`/g, (_m, c) => `\u0000${codes.push(c) - 1}\u0000`);
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, href) => {
+    const safe = /^(https?:|#|\/)/i.test(href) ? href : null;
+    return safe ? `<a href="${safe}" target="_blank" rel="noreferrer noopener">${label}</a>` : label;
+  });
+  return s.replace(/\u0000(\d+)\u0000/g, (_m, i) => `<code>${codes[Number(i)]}</code>`);
+}
+
+/** Minimal Markdown → HTML: headings, ordered/unordered lists, rules, paragraphs, inline spans. */
+function renderMarkdown(md) {
+  const out = [];
+  let list = null;
+  let para = [];
+  const flushPara = () => { if (para.length) { out.push(`<p>${mdInline(para.join(' '))}</p>`); para = []; } };
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+
+  for (const raw of String(md ?? '').replace(/\r\n?/g, '\n').split('\n')) {
+    const line = raw.trimEnd();
+    if (!line.trim()) { flushPara(); closeList(); continue; }
+
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      flushPara(); closeList();
+      out.push(`<h${heading[1].length}>${mdInline(heading[2])}</h${heading[1].length}>`);
+      continue;
+    }
+    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { flushPara(); closeList(); out.push('<hr>'); continue; }
+
+    const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    if (bullet || numbered) {
+      flushPara();
+      const want = bullet ? 'ul' : 'ol';
+      if (list !== want) { closeList(); out.push(`<${want}>`); list = want; }
+      out.push(`<li>${mdInline((bullet || numbered)[1])}</li>`);
+      continue;
+    }
+    if (list) closeList();
+    para.push(line.trim());
+  }
+  flushPara();
+  closeList();
+  return out.join('\n');
+}
+
 // ------------------------------------------------------------------ navigation
 const PAGE_TITLES = { home: '主界面', config: '配置', terminal: '终端', about: '关于' };
 let currentPage = 'home';
@@ -140,6 +194,8 @@ function renderShell() {
   else if (server.status === 'error') { dot.classList.add('err'); $('#side-status').textContent = '服务器异常'; }
   else { $('#side-status').textContent = SERVER_LABEL[server.status] || server.status; }
   $('#side-meta').textContent = `启动器 v${launcher.version}`;
+  if (S.self?.updateReady) $('#side-meta').textContent += ' · 待重启生效';
+  else if (S.self?.updateAvailable) $('#side-meta').textContent += ' · 有新版本';
 
   const badgeServer = $('#badge-server');
   badgeServer.textContent = SERVER_LABEL[server.status] || server.status;
@@ -253,27 +309,108 @@ function renderHome() {
 }
 
 // ------------------------------------------------------------------ render: history
+function entryHtml(version, date, bodyHtml, open) {
+  return `<details class="entry"${open ? ' open' : ''}>
+      <summary><span class="ver">${version}</span>${date ? `<span class="date">${date}</span>` : ''}</summary>
+      <div class="body md">${bodyHtml}</div>
+    </details>`;
+}
+
+function commitsHtml(commits, label = '最近提交') {
+  if (!commits.length) return '';
+  return `<details class="entry">
+      <summary><span class="ver">${escapeHtml(label)}（${commits.length}）</span></summary>
+      <div class="body commit-list">${commits.map((c) => `<div class="commit"><span class="hash">${escapeHtml(c.hash)}</span><span>${escapeHtml(c.subject)}</span><span class="cdate">${escapeHtml(c.date || '')}</span></div>`).join('')}</div>
+    </details>`;
+}
+
+function changelogHtml(sections, limit = 12) {
+  return sections.slice(0, limit)
+    .map((c, i) => entryHtml(`v${escapeHtml(c.version)}`, escapeHtml(c.date || ''), renderMarkdown(c.body), i === 0))
+    .join('');
+}
+
 function renderHistory() {
-  const { changelog = [], commits = [] } = history;
-  const html = [];
-  if (changelog.length) {
-    html.push(...changelog.slice(0, 12).map((c, i) => `
-      <details class="entry" ${i === 0 ? 'open' : ''}>
-        <summary><span class="ver">v${escapeHtml(c.version)}</span>${c.date ? `<span class="date">${escapeHtml(c.date)}</span>` : ''}</summary>
-        <div class="body">${escapeHtml(c.body)}</div>
-      </details>`));
-  }
-  if (commits.length) {
-    html.push(`<div class="entry"><summary style="cursor:default;list-style:none;padding-left:4px"><span class="ver" style="font-weight:600">最近提交（${commits.length}）</span></summary>
-      <div class="body commit-list">${commits.map((c) => `<div class="commit"><span class="hash">${escapeHtml(c.hash)}</span><span>${escapeHtml(c.subject)}</span><span class="cdate">${escapeHtml(c.date || '')}</span></div>`).join('')}</div></div>`);
-  }
-  const out = html.length ? html.join('') : '<p class="fine">部署完成后这里会显示版本更新历史（来自 CHANGELOG.md 与 git 提交记录）。</p>';
-  $('#history').innerHTML = out;
-  $('#about-changelog').innerHTML = out;
+  const game = { changelog: history.changelog || [], commits: history.commits || [] };
+  const self = history.self || { changelog: [], commits: [] };
+
+  const gameHtml = changelogHtml(game.changelog) + commitsHtml(game.commits);
+  $('#history').innerHTML = gameHtml || '<p class="fine">部署完成后这里会显示版本更新历史（来自 CHANGELOG.md 与 git 提交记录）。</p>';
+
+  const selfHtml = changelogHtml(self.changelog, 20) + commitsHtml(self.commits, '启动器最近提交');
+  $('#about-changelog').innerHTML = gameHtml || '<p class="fine">还没有更新历史。</p>';
+  $('#about-self-changelog').innerHTML = selfHtml || '<p class="fine">启动器还没有更新历史记录。</p>';
 }
 
 async function loadHistory() {
-  try { history = await api('/api/history'); renderHistory(); } catch { /* ignore */ }
+  try { history = await api('/api/history'); renderHistory(); renderSelfIncoming(); } catch { /* ignore */ }
+}
+
+// ------------------------------------------------------------------ render: launcher self-update
+const SELF_RELATION = {
+  equal: '与远端一致',
+  behind: '远端有新版本',
+  ahead: '本地领先于远端（有未推送的提交）',
+  diverged: '本地与远端已分叉',
+  unknown: '',
+};
+
+function renderSelfIncoming() {
+  const el = $('#self-incoming');
+  if (!el) return;
+  const self = (S && S.self) || {};
+  const parts = [];
+  if (self.error) {
+    parts.push(`<p class="fine">${escapeHtml(self.error)}</p>`);
+  } else if (self.updateAvailable) {
+    if (self.remoteChangelog?.length) {
+      parts.push('<p class="fine">新版本内容：</p>'
+        + self.remoteChangelog.map((c) => `<div class="md">${renderMarkdown(c.body)}</div>`).join(''));
+    }
+    if (self.incoming?.length) {
+      parts.push(`<p class="fine">待更新的提交（${self.incoming.length}）：</p><ul class="commit-list">`
+        + self.incoming.slice(0, 30).map((c) => `<li class="commit"><span class="hash">${escapeHtml(c.hash)}</span><span>${escapeHtml(c.subject)}</span><span class="cdate">${escapeHtml(c.date || '')}</span></li>`).join('')
+        + '</ul>');
+    }
+    if (!self.incoming?.length && !self.remoteChangelog?.length) {
+      parts.push('<p class="fine">有新版本可用，点「更新启动器」即可拉取。</p>');
+    }
+  } else if (self.relation === 'ahead') {
+    parts.push('<p class="fine">本地提交比远端新（你自己改过或还没 push），不需要更新。</p>');
+  } else if (self.relation === 'diverged') {
+    parts.push('<p class="fine">本地与远端各自有独立的提交，无法自动快进。需要时可在本地 <code>git pull --rebase</code>，或勾选「强制更新（丢弃本地修改）」覆盖为远端版本。</p>');
+  } else if (self.checkedAt) {
+    parts.push('<p class="fine">当前已是最新版本。</p>');
+  }
+  el.innerHTML = parts.join('');
+}
+
+function renderSelf() {
+  const self = (S && S.self) || {};
+  const lv = self.local?.version ?? S?.launcher?.version ?? '?';
+  const rv = self.remote?.version;
+
+  $('#self-row').innerHTML = [
+    ['当前版本', `v${lv}`],
+    ['远端版本', rv ? `v${rv}` : (self.error ? '获取失败' : '—')],
+    ['当前提交', self.local?.git?.short ? `${self.local.git.short}${self.local.git.dirty ? '（有本地修改）' : ''}` : '—'],
+    ['同步状态', SELF_RELATION[self.relation] || '—'],
+    ['最近检查', self.checkedAt ? new Date(self.checkedAt).toLocaleString('zh-CN', { hour12: false }) : '尚未检查'],
+  ].map(([k, v]) => `<div class="status-item"><span class="k">${escapeHtml(k)}</span><span class="v mono">${escapeHtml(String(v))}</span></div>`).join('');
+
+  const repo = $('#self-repo');
+  if (!self.isRepo) {
+    repo.textContent = `启动器目录不是 git 仓库，无法自动更新（请重新下载整合包）。${self.remoteUrl ? `仓库：${self.remoteUrl}` : ''}`;
+  } else {
+    repo.textContent = `仓库：${self.remoteUrl || '未配置'} · 分支 ${self.branch || 'master'}`
+      + (S?.config?.autoUpdateSelf ? ' · 启动时自动更新：开' : ' · 启动时自动更新：关');
+  }
+
+  const busy = S.task.status === 'running';
+  $('#btn-self-update').hidden = !(self.updateAvailable && self.canUpdate) || busy;
+  $('#btn-self-restart').hidden = !self.updateReady;
+  $('#card-self')?.classList.toggle('highlight', !!(self.updateAvailable && !self.updateReady) || self.updateReady);
+  renderSelfIncoming();
 }
 
 // ------------------------------------------------------------------ render: config
@@ -296,6 +433,8 @@ function fillConfigForm() {
   $('#cfg-debug').checked = !!c.debug;
   $('#cfg-concurrency').value = c.assetConcurrency;
   $('#cfg-autocheck').checked = !!c.autoUpdateCheck;
+  $('#cfg-auto-self').checked = !!c.autoUpdateSelf;
+  $('#cfg-self-repo').value = c.selfRepoUrl || '';
   $('#cfg-open-browser').checked = !!c.openBrowser;
   $('#cfg-autostart').checked = !!c.autoStart;
   $('#cfg-install-dir').value = c.installDir;
@@ -398,6 +537,7 @@ function render() {
   if (!S) return;
   renderShell();
   renderHome();
+  renderSelf();
   renderConfig();
   renderAbout();
   renderTaskProgress();
@@ -425,6 +565,8 @@ function readConfigForm() {
     debug: $('#cfg-debug').checked,
     assetConcurrency: Number($('#cfg-concurrency').value) || 16,
     autoUpdateCheck: $('#cfg-autocheck').checked,
+    autoUpdateSelf: $('#cfg-auto-self').checked,
+    selfRepoUrl: $('#cfg-self-repo').value.trim(),
     openBrowser: $('#cfg-open-browser').checked,
     autoStart: $('#cfg-autostart').checked,
     installDir: $('#cfg-install-dir').value.trim(),
@@ -521,6 +663,31 @@ function wire() {
     else if (action === 'refresh') api('/api/refresh', 'POST').catch(() => {});
     else if (action === 'check-update') api('/api/version/check', 'POST', { deep: false }).catch((err) => toast(err.message, 'error'));
     else if (action === 'deep-check') { api('/api/version/check', 'POST', { deep: true }).catch((err) => toast(err.message, 'error')); setPage('terminal'); }
+  });
+
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest('[data-self]');
+    if (!t) return;
+    const deep = t.dataset.self === 'deep';
+    if (deep) setPage('terminal');
+    api('/api/self/check', 'POST', { deep }).catch((err) => toast(err.message, 'error'));
+  });
+
+  $('#btn-self-update').addEventListener('click', async () => {
+    const force = $('#force-self-update').checked;
+    if (force && !confirm('强制更新会丢弃启动器目录里所有未提交的本地修改，确定继续？')) return;
+    try {
+      const r = await api('/api/self/update', 'POST', { force });
+      if (r.error) toast(r.error, 'warn');
+      else { toast('开始更新启动器，可在「终端」查看进度', 'ok'); setPage('terminal'); }
+    } catch (e) { toast(`更新失败：${e.message}`, 'error'); }
+  });
+
+  $('#btn-self-restart').addEventListener('click', async () => {
+    const running = ['running', 'external'].includes(S.server.status);
+    const warn = running ? '重启启动器会同时停止正在运行的服务器（进行中的对局会结束）。\n\n确定现在重启？' : '重启启动器使更新生效？';
+    if (!confirm(warn)) return;
+    try { await api('/api/self/restart', 'POST'); toast('正在重启启动器…', 'ok'); } catch (e) { toast(e.message, 'error'); }
   });
 
   $('#badge-update').addEventListener('click', () => {

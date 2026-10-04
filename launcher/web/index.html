@@ -124,6 +124,24 @@
           </div>
         </div>
 
+        <div class="card" id="card-self">
+          <div class="card-head">
+            <h2>启动器更新</h2>
+            <div class="card-head-actions">
+              <button class="btn ghost sm" data-self="check">检查更新</button>
+              <button class="btn ghost sm" data-self="deep">检查并列出待更新提交</button>
+            </div>
+          </div>
+          <div class="version-row" id="self-row"></div>
+          <div class="incoming" id="self-incoming"></div>
+          <p class="fine" id="self-repo"></p>
+          <div class="update-actions">
+            <button class="btn primary" id="btn-self-update" hidden>更新启动器</button>
+            <button class="btn success" id="btn-self-restart" hidden>重启启动器使更新生效</button>
+            <label class="check"><input type="checkbox" id="force-self-update"> 强制更新（丢弃本地修改）</label>
+          </div>
+        </div>
+
         <div class="card" id="card-share">
           <div class="card-head"><h2>分享给朋友</h2></div>
           <div id="share-list" class="share-list"></div>
@@ -194,6 +212,20 @@
             <label class="field"><span>素材并发数（1–64）</span><input type="number" min="1" max="64" id="cfg-concurrency"></label>
             <label class="field check-field"><span>打开启动器时自动检查更新</span><input type="checkbox" id="cfg-autocheck"></label>
           </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>启动器更新</h2></div>
+          <div class="form-grid">
+            <label class="field check-field"><span>启动时自动更新启动器</span><input type="checkbox" id="cfg-auto-self"></label>
+            <label class="field wide"><span>启动器仓库地址（默认是公开的 HTTPS 地址，人人可用；清空则改用本地仓库的 <code>origin</code>）</span>
+              <input type="text" id="cfg-self-repo" spellcheck="false" placeholder="https://github.com/Starst796/Stronghold-Protocol-Server-Launcher">
+            </label>
+          </div>
+          <p class="fine">
+            开启后，启动器会在控制面板打开之前（此时没有任何对局在运行）检查自己的仓库并快进到最新版本，然后自动重启。
+            仓库无法访问、本地有未提交改动时会自动跳过，不影响使用；也可以在「主界面 → 启动器更新」里手动更新。
+          </p>
         </div>
 
         <div class="card">
@@ -290,6 +322,11 @@
         <div class="card">
           <div class="card-head"><h2>完整更新历史</h2></div>
           <div id="about-changelog" class="history"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>启动器更新历史</h2></div>
+          <div id="about-self-changelog" class="history"></div>
         </div>
       </section>
 

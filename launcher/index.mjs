@@ -8,6 +8,7 @@
 // the launcher and the game server it started.
 
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { createHttpServer } from './lib/httpd.mjs';
 import { EventBus, LogStore, CHANNELS } from './lib/events.mjs';
 import { TaskRunner } from './lib/tasks.mjs';
@@ -16,14 +17,17 @@ import {
   loadConfig, patchConfig, allPresets, sourceById, SOURCES, ROOT, BUILTIN_PRESETS, installDirOf,
 } from './lib/config.mjs';
 import {
-  inspectInstall, installFromSource, updateFromSource, npmCommand, gitCommand, gameDir, parseChangelog,
+  inspectInstall, installFromSource, updateFromSource, npmCommand, gitCommand, gameDir, parseChangelog, gitInfo,
 } from './lib/repo.mjs';
 import { checkUpdate, localHistory } from './lib/version.mjs';
+import {
+  checkSelf as checkSelfUpdate, applySelf, selfHistory, selfVersion, selfRemote, selfBranch, isSelfRepo,
+} from './lib/selfupdate.mjs';
 import {
   exists, openExternal, openFolder, localAddresses, hasCommand, runCapture, fetchWithTimeout, nowIso, IS_WIN, IS_MAC, IS_LINUX,
 } from './lib/util.mjs';
 
-const LAUNCHER_VERSION = '1.0.0';
+const LAUNCHER_VERSION = selfVersion() || '1.0.0';
 const DEFAULT_LAUNCHER_PORT = Number(process.env.SP_LAUNCHER_PORT) || 7878;
 
 const argv = process.argv.slice(2);
@@ -68,6 +72,19 @@ let versionInfo = {
 };
 let checkingVersion = false;
 
+/** Local snapshot of the launcher's own repo, so the UI can render before any network check. */
+function localSelfInfo() {
+  return {
+    checkedAt: null, dir: ROOT, branch: selfBranch(), remoteUrl: selfRemote(config),
+    isRepo: isSelfRepo(), canUpdate: isSelfRepo(),
+    local: { version: LAUNCHER_VERSION, git: isSelfRepo() ? gitInfo(ROOT) : null },
+    remote: null, updateAvailable: false, relation: 'unknown', incoming: [], error: null,
+  };
+}
+let selfInfo = { ...localSelfInfo() };
+let selfUpdateReady = false;   // an update was applied and needs a launcher restart
+let checkingSelf = false;
+
 function refreshInstall() {
   installInfo = inspectInstall(config);
   return installInfo;
@@ -96,6 +113,7 @@ function buildState() {
     task: taskRunner.state,
     version: versionInfo,
     checkingVersion,
+    self: { ...selfInfo, updateReady: selfUpdateReady, checking: checkingSelf },
     network: { addresses: localAddresses(), share: game.shareUrls() },
     presets: allPresets(config),
     sources: SOURCES,
@@ -268,12 +286,72 @@ const actions = {
     const history = exists(path.join(gameDir(config), 'package.json'))
       ? localHistory(config)
       : { changelog: [], commits: [] };
-    return { ...history, version: versionInfo, remoteChangelog: versionInfo.remoteChangelog || [] };
+    return {
+      ...history,
+      version: versionInfo,
+      remoteChangelog: versionInfo.remoteChangelog || [],
+      self: selfHistory(),
+    };
   },
 
   getChangelog() {
     const dir = gameDir(config);
     return exists(path.join(dir, 'CHANGELOG.md')) ? parseChangelog(dir) : [];
+  },
+
+  // ---------------------------------------------------------------- launcher self-update
+  async checkSelf(deep = false) {
+    if (checkingSelf) return { checking: true, self: selfInfo };
+    checkingSelf = true;
+    emitState();
+    log({ channel: 'update', stream: 'meta', line: `▶ 检查启动器更新（${selfRemote(config) || '未配置仓库'}）…` });
+    try {
+      selfInfo = await checkSelfUpdate(config, { deep, log: (line) => log({ channel: 'update', stream: 'stdout', line }) });
+      if (selfInfo.error) log({ channel: 'update', stream: 'stderr', line: `启动器更新检查失败：${selfInfo.error}` });
+      else if (selfInfo.updateAvailable) log({ channel: 'update', stream: 'stdout', line: `启动器有新版本：${selfInfo.local.version} → ${selfInfo.remote?.version ?? '?'}` });
+      else log({ channel: 'update', stream: 'stdout', line: `启动器已是最新（${selfInfo.local.version}）` });
+    } catch (e) {
+      selfInfo = { ...selfInfo, checkedAt: nowIso(), error: String(e?.message || e) };
+      log({ channel: 'update', stream: 'stderr', line: `启动器更新检查失败：${selfInfo.error}` });
+    } finally {
+      checkingSelf = false;
+      emitState();
+    }
+    return { self: selfInfo };
+  },
+
+  async updateSelf(force = false) {
+    if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
+    if (!isSelfRepo()) return { started: false, error: '启动器目录不是 git 仓库，无法自动更新。' };
+    const before = { version: selfVersion(), commit: gitInfo(ROOT)?.commit ?? null };
+    const steps = [{
+      label: force ? '强制更新启动器（丢弃本地修改）' : '更新启动器',
+      run: (ctx) => applySelf(config, { force, log: (line, stream) => ctx.log(line, stream) }),
+    }];
+    const promise = taskRunner.run('update', force ? '强制更新启动器' : '更新启动器', steps);
+    promise.then(async (r) => {
+      const after = { version: selfVersion(), commit: gitInfo(ROOT)?.commit ?? null };
+      const changed = before.commit !== after.commit || before.version !== after.version;
+      if (r.ok && changed) {
+        selfUpdateReady = true;
+        selfInfo = await checkSelfUpdate(config, { deep: false });
+        toast('启动器已更新，重启后生效', 'ok', 8000);
+      } else if (r.ok) {
+        selfInfo = await checkSelfUpdate(config, { deep: false });
+        toast('启动器已是最新，无需重启', 'ok', 5000);
+      } else {
+        toast('启动器更新失败', 'error', 8000);
+      }
+      emitState();
+    });
+    return { started: true };
+  },
+
+  restartSelf() {
+    if (taskRunner.busy) return { ok: false, error: '有任务正在运行，请稍后再试。' };
+    log({ channel: 'launcher', stream: 'meta', line: '正在重启启动器…' });
+    setTimeout(() => relaunchAndExit(), 300);
+    return { ok: true };
   },
 
   async serverStart() { const r = await game.start(); emitState(); return r; },
@@ -346,7 +424,74 @@ function shutdown(code = 0) {
   setTimeout(() => process.exit(code), 400);
 }
 
+/**
+ * Restart the launcher in place (used after a self-update).
+ *
+ * The child replaces this process for the user, but we *stay alive and wait* for it: on Windows
+ * the launcher usually runs inside the console created by 启动器.bat, and exiting immediately
+ * would close that console and take the freshly started child down with it.
+ */
+async function relaunchAndExit() {
+  if (process.env.SP_SELF_RELAUNCHED === '1') return;
+  try { game.dispose(); } catch { /* ignore */ }      // stop the game server before handing over
+  try { httpServer?.close(); } catch { /* ignore */ }
+  const child = spawn(process.execPath, process.argv.slice(1), {
+    stdio: 'inherit',
+    env: { ...process.env, SP_SELF_RELAUNCHED: '1' },
+  });
+  const code = await new Promise((resolve) => {
+    child.on('error', () => resolve(1));
+    child.on('exit', (c) => resolve(c ?? 0));
+  });
+  process.exit(code);
+}
+
+/**
+ * Update the launcher from its own repository before the control panel exists.
+ * Safe by construction: nothing is running yet, and a failure (offline, no upstream access,
+ * local modifications) only logs and continues with the current version.
+ */
+async function selfUpdateAtStartup() {
+  if (!config.autoUpdateSelf || !isSelfRepo()) return;
+  if (process.env.SP_SELF_RELAUNCHED === '1') return;   // already updated + restarted once
+  const t0 = Date.now();
+  process.stdout.write('  正在检查启动器更新…');
+  try {
+    const info = await checkSelfUpdate(config, { quick: true, log: (line) => log({ channel: 'update', stream: 'stdout', line }) });
+    selfInfo = info;
+    if (info.error) {
+      console.log(`\r  启动器自更新已跳过：${info.error}`);
+      log({ channel: 'update', stream: 'stdout', line: `启动器自更新已跳过：${info.error}` });
+      return;
+    }
+    if (!info.updateAvailable) {
+      console.log(`\r  启动器已是最新（v${info.local.version}，${((Date.now() - t0) / 1000).toFixed(1)}s）`);
+      log({ channel: 'update', stream: 'stdout', line: `启动器已是最新（v${info.local.version}）` });
+      return;
+    }
+    console.log(`\r  发现启动器新版本，正在自动更新…`);
+    log({ channel: 'update', stream: 'meta', line: `▶ 启动器有新版本（${info.local.git?.short ?? info.local.version} → ${info.remote?.commit?.slice(0, 7) ?? '?'}），正在自动更新…` });
+    const before = gitInfo(ROOT)?.commit ?? null;
+    const r = await applySelf(config, { force: false, log: (line) => log({ channel: 'update', stream: 'stdout', line }) });
+    if ((gitInfo(ROOT)?.commit ?? null) === before) {
+      // The remote commit was already in our history (local ahead) — nothing was pulled, so a
+      // restart would be pointless (and would repeat on every launch).
+      console.log('\r  启动器已是最新，无需重启');
+      log({ channel: 'update', stream: 'stdout', line: '启动器已经包含最新提交，跳过重启。' });
+      return;
+    }
+    log({ channel: 'update', stream: 'meta', line: `✔ 启动器已更新到 v${r.version}，正在重启…` });
+    console.log('  启动器已自动更新，正在重启…\n');
+    await relaunchAndExit();
+  } catch (e) {
+    console.log(`\r  启动器自更新已跳过：${e?.message || e}`);
+    log({ channel: 'update', stream: 'stdout', line: `启动器自更新已跳过：${e?.message || e}` });
+  }
+}
+
 async function main() {
+  await selfUpdateAtStartup();   // may relaunch the process; must run before anything listens
+
   const port = await pickPort(argPort || DEFAULT_LAUNCHER_PORT);
   const url = `http://127.0.0.1:${port}/`;
   httpServer = createHttpServer({ getState: buildState, actions, logStore, bus });
