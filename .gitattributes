@@ -1,0 +1,12 @@
+# Windows 批处理脚本必须保留 CRLF 换行。
+#
+# cmd.exe 解析含有非 ASCII 字符（UTF-8 中文）的 .bat 时，纯 LF 换行会让它
+# 按字节计算的行游标错位，从而把后面的脚本片段当成命令执行（报一堆
+# 「不是内部或外部命令」，屏幕一片乱码）。而 Git 默认的 EOL 归一化
+# （core.autocrlf）会在提交时把 CRLF 变成 LF，于是 blob、git clone 与
+# GitHub ZIP 下载全都拿到 LF，问题必然复现。
+#
+# 这里对批处理关闭 EOL 归一化，让仓库里存的、检出的、以及 GitHub ZIP
+# 下载到的都是 CRLF；diff 属性保证仍以文本方式显示差异。
+*.bat -text diff
+*.cmd -text diff
