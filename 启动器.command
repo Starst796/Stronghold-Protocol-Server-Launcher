@@ -8,7 +8,8 @@ cd "$(dirname "$0")" || exit 1
 chmod +x ./start.sh 2>/dev/null || true
 
 # 出错时不要立刻关窗口，让用户能看到错误信息。
-./start.sh "$@"
+# 显式用 bash 执行，避免 start.sh 在 exFAT / 网络盘上丢掉执行位后无法直接运行。
+bash ./start.sh "$@"
 code=$?
 if [ "$code" -ne 0 ]; then
   echo

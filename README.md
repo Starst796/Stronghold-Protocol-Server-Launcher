@@ -170,6 +170,19 @@ Stronghold-Protocol-Server-Launcher/
 
 ## 常见问题
 
+**Q：macOS 双击 `启动器.command` 提示 `bad interpreter: /bin/bash^M`？**
+脚本被 Windows 下的压缩/解压工具带上了 CRLF 换行，shebang 于是变成
+`#!/bin/bash\r`，系统找不到 `/bin/bash^M`。本仓库已用 `.gitattributes` 固定换行符
+（`*.sh`、`*.command` 一律 LF，`*.bat`、`*.cmd` 一律 CRLF），`git clone` 和官方
+ZIP 下载不会再有这个问题。若手上的压缩包来自其它途径，在该文件夹里执行下面
+一行即可修复（macOS 自带 `perl`）：
+
+```bash
+perl -pi -e 's/\r$//' 启动器.command start.sh && chmod +x 启动器.command start.sh
+```
+
+修复后仍可双击 `启动器.command`，或在终端里运行 `bash start.sh`。
+
 **Q：电脑上没装 Node.js 怎么办？**
 直接双击 `启动器.bat` / `启动器.command` 就行：脚本会优先用 `runtime/` 里自带的安装包
 （Windows 打开 `.msi`；macOS / Linux 解压便携版到 `runtime/node/`，不需要管理员密码）；

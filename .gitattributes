@@ -1,12 +1,25 @@
-# Windows 批处理脚本必须保留 CRLF 换行。
+# ---------------------------------------------------------------------------
+# 换行符策略（已经踩过两次坑，改动前请先读完，见 CHANGELOG）
 #
-# cmd.exe 解析含有非 ASCII 字符（UTF-8 中文）的 .bat 时，纯 LF 换行会让它
-# 按字节计算的行游标错位，从而把后面的脚本片段当成命令执行（报一堆
-# 「不是内部或外部命令」，屏幕一片乱码）。而 Git 默认的 EOL 归一化
-# （core.autocrlf）会在提交时把 CRLF 变成 LF，于是 blob、git clone 与
-# GitHub ZIP 下载全都拿到 LF，问题必然复现。
+# 1) *.bat / *.cmd 必须保持 CRLF。
+#    cmd.exe 解析含非 ASCII（UTF-8 中文）的批处理时，纯 LF 换行会让它按字节
+#    计算的行游标错位，把后面的脚本片段当成命令执行（报一堆「不是内部或外部
+#    命令」并满屏乱码）。用 -text 关闭这两个扩展名的 EOL 归一化，保证仓库
+#    blob、git clone 以及 GitHub / Gitee 的 ZIP 下载拿到的都是 CRLF。
 #
-# 这里对批处理关闭 EOL 归一化，让仓库里存的、检出的、以及 GitHub ZIP
-# 下载到的都是 CRLF；diff 属性保证仍以文本方式显示差异。
+# 2) *.sh / *.command 必须是 LF。
+#    CRLF 会让 shebang 变成「#!/bin/bash\r」，直接执行时报
+#    「bad interpreter: /bin/bash^M: No such file or directory」。
+#    显式声明 eol=lf 后，无论本机 core.autocrlf 是什么、无论从 git 检出还是
+#    从 Windows 打包压缩，工作区里的这两个脚本都保持 LF。
+#
+# 3) 其余文本文件统一 LF，避免某个平台的 CRLF 混进发布压缩包。
+# ---------------------------------------------------------------------------
+
+* text=auto eol=lf
+
 *.bat -text diff
 *.cmd -text diff
+
+*.sh text eol=lf
+*.command text eol=lf

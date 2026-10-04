@@ -1,5 +1,19 @@
 # 更新记录
 
+## 1.1.6 — 2026-10-05
+
+修复 macOS / Linux 启动脚本的换行符（CRLF）问题。
+
+### 修复
+
+- **macOS 双击 `启动器.command` 报 `bad interpreter: /bin/bash^M`**：仓库里的 `start.sh` / `启动器.command` 本身是 LF，但在 Windows 上（`core.autocrlf=true`）检出后工作区会变成 CRLF；把工作区直接打成压缩包分发，CRLF 就让 shebang 变成 `#!/bin/bash\r`，macOS 找不到 `/bin/bash^M`。现在 `.gitattributes` 显式声明 `*.sh` / `*.command` 为 `text eol=lf`，无论本机 `core.autocrlf` 如何，检出与打包都保持 LF；发布用的 `*.bat` / `*.cmd` 依旧保持 CRLF，不受影响（见 1.1.2）。
+- 把工作区里所有文本文件重新归一化为 LF 并提交，修好此前已经带着 CRLF 的副本。
+- `启动器.command` 改用 `bash ./start.sh` 调用，不再依赖脚本的执行位。
+
+### 变更
+
+- `.gitattributes` 增加 `* text=auto eol=lf`，并为 `*.sh` / `*.command` 显式指定 `eol=lf`。
+
 ## 1.1.5 — 2026-10-04
 
 未安装 git 时的启动提示。
