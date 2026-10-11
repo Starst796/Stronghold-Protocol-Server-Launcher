@@ -13,7 +13,7 @@ import { pipeline } from 'node:stream/promises';
 import {
   exists, readJson, which, hasCommand, IS_WIN, formatBytes, dirSize, runCapture, runStream, prependPath,
 } from './util.mjs';
-import { sourceById, installDirOf, ROOT } from './config.mjs';
+import { sourceById, installDirOf, assetRouteOf, ROOT } from './config.mjs';
 
 const RUNTIME_PACKAGES = ['ws', 'pixi.js', 'pixi-spine', 'preact', 'htm'];
 const VENDOR_REQUIRED = ['pixi.min.js', 'pixi-spine.js', 'preact.module.js', 'hooks.module.js', 'htm.module.js'];
@@ -368,24 +368,35 @@ export function assetManifestHeld(dir) {
 }
 
 /**
- * Sync the game's art / audio by running `tools/fetch-assets.mjs`, retrying once with `--refresh-index`
- * when the manifest shrink guard blocked the write. The refreshed indexes are the remedy the tool prints
- * itself; without this the failure surfaces as a hard "下载素材失败（退出码 1）" on every install whose
- * `.cache/` indexes predate a game update that added an operator.
- * @param {object} cfg launcher config (`installDir`, `assetConcurrency`)
+ * Sync the game's art / audio by running `tools/fetch-assets.mjs`, healing the two failures the tool
+ * reports on an existing install:
+ *   1. the manifest shrink guard — a stale `.cache/` upstream index that predates an operator the game
+ *      update added, so the plan cannot reproduce her audio entries (`--refresh-index` is the remedy
+ *      the tool prints itself);
+ *   2. downloads that fail on a direct connection to GitHub — retried through the GitHub mirror
+ *      (`--asset-source=mirror`), which is what the tool tells the user to do by hand.
+ * A fresh index and plenty of bandwidth cost nothing extra: every step only runs after a failed one.
+ * @param {object} cfg launcher config (`installDir`, `assetConcurrency`, `downloadSource`)
  * @param {{log?:(line:string,stream?:string)=>void, trackChild?:(handle:any)=>void, isCancelled?:()=>boolean}} [o]
  *   `trackChild` hands the running child over so the task runner's cancel can still kill it;
- *   `isCancelled` suppresses the retry after the user cancelled.
- * @returns {Promise<{ok:boolean, code:number, refreshed:boolean}>} `refreshed` = retried with new indexes
+ *   `isCancelled` suppresses the retries after the user cancelled.
+ * @returns {Promise<{ok:boolean, code:number, refreshed:boolean, mirrored:boolean}>}
  */
 export async function syncAssets(cfg, { log = () => {}, trackChild = () => {}, isCancelled = () => false } = {}) {
   const dir = gameDir(cfg);
-  const base = [path.join('tools', 'fetch-assets.mjs'), `--concurrency=${cfg.assetConcurrency || 16}`];
-  const attempt = async (args) => {
+  const route = assetRouteOf(cfg);
+  const attempt = async (route, args) => {
     const lines = [];
-    const handle = runStream(process.execPath, args, {
+    const env = prependPath(path.dirname(process.execPath));
+    if (route.proxy) env.SP_GITHUB_PROXY = route.proxy;
+    const handle = runStream(process.execPath, [
+      path.join('tools', 'fetch-assets.mjs'),
+      `--concurrency=${cfg.assetConcurrency || 16}`,
+      `--asset-source=${route.source}`,
+      ...args,
+    ], {
       cwd: dir,
-      env: prependPath(path.dirname(process.execPath)),
+      env,
       onLine: (stream, line) => { lines.push(line); log(line, stream); },
     });
     trackChild(handle);
@@ -398,12 +409,19 @@ export async function syncAssets(cfg, { log = () => {}, trackChild = () => {}, i
     }
   };
 
-  let r = await attempt(base);
+  let r = await attempt(route, []);
   let refreshed = false;
   if (r.code !== 0 && !isCancelled() && ASSET_SHRINK_RE.test(r.text)) {
     log('素材清单将缩小 —— 本地的上游索引可能已过期（游戏更新新增了干员 / 模型）。重新拉取索引后重试…', 'meta');
     refreshed = true;
-    r = await attempt([...base, '--refresh-index']);
+    r = await attempt(route, ['--refresh-index']);
   }
-  return { ok: r.code === 0, code: r.code, refreshed };
+  let mirrored = false;
+  if (r.code !== 0 && !isCancelled() && route.source === 'direct') {
+    log('直连 GitHub 未能下完素材；改用 GitHub 镜像（--asset-source=mirror）重试…', 'meta');
+    mirrored = true;
+    // --refresh-index again: the index download may have been what the blocked network stopped above.
+    r = await attempt({ source: 'mirror' }, ['--refresh-index']);
+  }
+  return { ok: r.code === 0, code: r.code, refreshed, mirrored };
 }

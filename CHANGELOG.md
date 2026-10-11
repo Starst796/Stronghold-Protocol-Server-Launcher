@@ -1,5 +1,22 @@
 # 更新记录
 
+## 1.1.8 — 2026-10-11
+
+素材下载跟随「下载源」，并在直连下不完时自动改用镜像重试。
+
+### 修复
+
+- **选了加速源，素材却仍走 GitHub 直连**：约 250 MB 的美术 / 音频由游戏自带的 `tools/fetch-assets.mjs` 下载，启动器此前只传 `--concurrency`，所以「下载源」即使选了 gh-proxy / ghfast / ghproxy.net / Gitee，素材照样从直连取——正是这些源想绕开的那条路。现在每个内置源都带一条素材路线（`launcher/lib/config.mjs` 的 `assetRouteOf()`）：`github` / `gitclone` → 直连；加速源 → `--asset-source=mirror` 并把该源的代理前缀用 `SP_GITHUB_PROXY` 一起传给工具；Gitee 源用工具的默认镜像前缀。「一键部署」「修复安装」「更新到最新版本」里的 `setup.mjs` 步骤同样带上这条路线，与「下载素材」保持一致。
+- **直连下不完时自动改用镜像**：这类网络会表现为 `downloaded this run : 224.0 MB (ok 5125, missing 56, errors 167)`、spine `err=166`——跑 1655 秒仍缺 140 个文件，随后因为 23 个干员的 skel/atlas 没下到（整棵 Spine 子树消失）加索引过期的 32 条，触发清单缩小保护（共 2486 条），而工具自己提示的补救办法正是 `--asset-source=mirror`。现在素材同步在直连失败后会自动改用 `--asset-source=mirror` + `--refresh-index` 再试一次（镜像只按格式和大小校验，连续失败时工具内部仍会回退直连与 jsDelivr）；若「下载源」本身就是加速源，则不再多试一次，也不会在索引新鲜时触发重试。
+- 修复过程中用过的补救会写进日志（`直连 GitHub 未能下完素材；改用 GitHub 镜像…`）和失败提示（`已刷新上游索引` / `已改用 GitHub 镜像`），不再是笼统的「网络问题？」。
+
+### 变更
+
+- `launcher/lib/config.mjs`：`SOURCES` 每项新增 `asset` 路线，导出 `assetRouteOf(cfg)`。
+- `launcher/lib/repo.mjs`：`syncAssets()` 传 `--asset-source`（按需 `SP_GITHUB_PROXY`），新增镜像兜底，返回 `{ ok, code, refreshed, mirrored }`。
+- `launcher/index.mjs`：`setupEnv()` 统一生成 `setup.mjs` 步骤的环境（`SP_LAUNCHER` + `SP_ASSET_SOURCE` + 按需 `SP_GITHUB_PROXY`）。
+- README「下载源」补上遗漏的 `gitee-starst796`，并说明素材下载如何跟随所选源。
+
 ## 1.1.7 — 2026-10-11
 
 修复游戏更新后「更新到最新版本」与「下载素材」因上游索引过期而报错的问题。

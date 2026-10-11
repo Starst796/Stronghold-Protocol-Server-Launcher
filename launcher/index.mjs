@@ -14,7 +14,7 @@ import { EventBus, LogStore, CHANNELS } from './lib/events.mjs';
 import { TaskRunner } from './lib/tasks.mjs';
 import { GameServer, probePort } from './lib/game.mjs';
 import {
-  loadConfig, patchConfig, allPresets, sourceById, SOURCES, ROOT, BUILTIN_PRESETS, installDirOf,
+  loadConfig, patchConfig, allPresets, sourceById, assetRouteOf, SOURCES, ROOT, BUILTIN_PRESETS, installDirOf,
 } from './lib/config.mjs';
 import {
   inspectInstall, installFromSource, updateFromSource, npmCommand, gitCommand, gameDir, parseChangelog, gitInfo,
@@ -137,10 +137,24 @@ const nodeStep = (label, args, dir, extra = {}) => ({
 });
 
 /**
- * Sync art / audio through the game's tool, which retries with refreshed indexes when the manifest
- * shrink guard trips (repo.mjs `syncAssets`). `strict` is the explicit 「下载素材」action, which must
- * report a failure it cannot finish; without it (deploy / update flows) a remaining gap is only a
- * warning — like the game's own tools/setup.mjs, the game still runs with placeholder art.
+ * The environment for the steps that run the game's tools/setup.mjs: it drives the asset tool itself,
+ * so hand it the route the chosen download source implies (config.mjs `assetRouteOf`) — otherwise a
+ * user who picked an accelerated source still downloads the ~250 MB of art straight from GitHub.
+ */
+function setupEnv() {
+  const route = assetRouteOf(config);
+  return {
+    SP_LAUNCHER: '1',
+    SP_ASSET_SOURCE: route.source,
+    ...(route.proxy ? { SP_GITHUB_PROXY: route.proxy } : {}),
+  };
+}
+
+/**
+ * Sync art / audio through the game's tool, which heals a stale upstream index and a blocked direct
+ * GitHub connection by itself (repo.mjs `syncAssets`). `strict` is the explicit 「下载素材」action,
+ * which must report a failure it cannot finish; without it (deploy / update flows) a remaining gap is
+ * only a warning — like the game's own tools/setup.mjs, the game still runs with placeholder art.
  */
 async function runAssetSync(ctx, { strict }) {
   const r = await syncAssets(config, {
@@ -149,7 +163,8 @@ async function runAssetSync(ctx, { strict }) {
     isCancelled: ctx.isCancelled,
   });
   if (r.ok) return;
-  const tail = `${r.code}${r.refreshed ? '，已刷新上游索引' : ''}`;
+  const via = [r.refreshed && '已刷新上游索引', r.mirrored && '已改用 GitHub 镜像'].filter(Boolean).join('、');
+  const tail = `${r.code}${via ? `，${via}` : ''}`;
   if (strict) throw new Error(`素材仍未下载完整（退出码 ${tail}），可稍后重试（支持续传）`);
   ctx.log(`素材仍未下载完整（退出码 ${tail}）；游戏仍可运行（使用占位图），可稍后点「下载素材」续传。`, 'meta');
 }
@@ -172,17 +187,16 @@ function deploySteps(action) {
   const cfg = config;
   const dir = gameDir(cfg);
   const steps = [];
-  const setupEnv = { SP_LAUNCHER: '1' };
 
   if (action === 'full') {
     steps.push({
       label: '下载 / 检出游戏源码',
       run: (ctx) => installFromSource(cfg, { log: (line, stream) => ctx.log(line, stream) }),
     });
-    steps.push(nodeStep('安装依赖、前端库并下载素材（可中断续传）', [path.join('tools', 'setup.mjs'), '--quiet'], dir, { env: setupEnv }));
+    steps.push(nodeStep('安装依赖、前端库并下载素材（可中断续传）', [path.join('tools', 'setup.mjs'), '--quiet'], dir, { env: setupEnv() }));
     steps.push(assetHealStep(dir));
   } else if (action === 'repair') {
-    steps.push(nodeStep('检查并补全依赖与素材（可中断续传）', [path.join('tools', 'setup.mjs'), '--quiet'], dir, { env: setupEnv }));
+    steps.push(nodeStep('检查并补全依赖与素材（可中断续传）', [path.join('tools', 'setup.mjs'), '--quiet'], dir, { env: setupEnv() }));
     steps.push(assetHealStep(dir));
   } else if (action === 'deps') {
     const npm = npmCommand();
@@ -222,7 +236,7 @@ async function runUpdate(force) {
   const dir = gameDir(config);
   const steps = [
     { label: '获取最新版本', run: (ctx) => updateFromSource(config, { force, log: (line, stream) => ctx.log(line, stream) }) },
-    nodeStep('同步依赖与素材', [path.join('tools', 'setup.mjs'), '--quiet'], dir, { env: { SP_LAUNCHER: '1' } }),
+    nodeStep('同步依赖与素材', [path.join('tools', 'setup.mjs'), '--quiet'], dir, { env: setupEnv() }),
     assetHealStep(dir),
   ];
   const promise = taskRunner.run('update', force ? '强制更新' : '更新到最新版本', steps);

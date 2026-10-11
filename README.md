@@ -128,8 +128,9 @@ https://github.com/Starst796/Stronghold-Protocol-Server-Launcher
 | `ghfast` | `ghfast.top` 加速代理 |
 | `ghproxy-net` | `ghproxy.net` 加速代理 |
 | `gitclone` | `gitclone.com` 缓存镜像（只支持 clone，更新可能滞后） |
+| `gitee-starst796` | `gitee.com` 镜像（Starst796），国内稳定，更新可能滞后 |
 
-素材下载由游戏自带的 `tools/fetch-assets.mjs` 负责，它自己会在 GitHub raw 失败时回退到 jsDelivr。
+素材（约 250 MB 美术 / 音频）下载由游戏自带的 `tools/fetch-assets.mjs` 负责。**它会跟随上面选的源**：`github` / `gitclone` → 直连 GitHub raw（失败时工具自己回退 jsDelivr）；加速源 → `--asset-source=mirror` 并带上对应的代理前缀。在此之上启动器还兜一层：直连下不完时自动改用 GitHub 镜像重试；若素材清单因本地上游索引过期而「将要缩小」（游戏更新新增了干员 / 模型，见 `--refresh-index`），会自动刷新索引后再试一次。
 
 ---
 

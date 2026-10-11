@@ -34,6 +34,7 @@ export const SELF_REPO_URL = `https://github.com/${SELF_REPO_SLUG}`;
  * Download sources. Direct github.com git access is blocked on some networks,
  * so several community mirrors are offered; the UI can probe them ("测试速度").
  * `git` = clone URL, `archive` = tar.gz of the branch (no git needed).
+ * `asset` = the art / audio route this source implies (see `assetRouteOf`).
  */
 export const SOURCES = [
   {
@@ -43,6 +44,7 @@ export const SOURCES = [
     git: `https://github.com/${REPO_SLUG}.git`,
     archive: `https://codeload.github.com/${REPO_SLUG}/tar.gz/refs/heads/${BRANCH}`,
     raw: `https://raw.githubusercontent.com/${REPO_SLUG}/${BRANCH}/`,
+    asset: { source: 'direct' },
   },
   {
     id: 'ghproxy',
@@ -51,6 +53,7 @@ export const SOURCES = [
     git: `https://gh-proxy.com/https://github.com/${REPO_SLUG}.git`,
     archive: `https://gh-proxy.com/https://github.com/${REPO_SLUG}/archive/refs/heads/${BRANCH}.tar.gz`,
     raw: `https://gh-proxy.com/https://raw.githubusercontent.com/${REPO_SLUG}/${BRANCH}/`,
+    asset: { source: 'mirror', proxy: 'https://gh-proxy.com/' },
   },
   {
     id: 'ghfast',
@@ -59,6 +62,7 @@ export const SOURCES = [
     git: `https://ghfast.top/https://github.com/${REPO_SLUG}.git`,
     archive: `https://ghfast.top/https://github.com/${REPO_SLUG}/archive/refs/heads/${BRANCH}.tar.gz`,
     raw: `https://ghfast.top/https://raw.githubusercontent.com/${REPO_SLUG}/${BRANCH}/`,
+    asset: { source: 'mirror', proxy: 'https://ghfast.top/' },
   },
   {
     id: 'ghproxy-net',
@@ -67,6 +71,7 @@ export const SOURCES = [
     git: `https://ghproxy.net/https://github.com/${REPO_SLUG}.git`,
     archive: `https://ghproxy.net/https://github.com/${REPO_SLUG}/archive/refs/heads/${BRANCH}.tar.gz`,
     raw: `https://ghproxy.net/https://raw.githubusercontent.com/${REPO_SLUG}/${BRANCH}/`,
+    asset: { source: 'mirror', proxy: 'https://ghproxy.net/' },
   },
   {
     id: 'gitclone',
@@ -75,6 +80,8 @@ export const SOURCES = [
     git: `https://gitclone.com/github.com/${REPO_SLUG}.git`,
     archive: `https://codeload.github.com/${REPO_SLUG}/tar.gz/refs/heads/${BRANCH}`,
     raw: `https://raw.githubusercontent.com/${REPO_SLUG}/${BRANCH}/`,
+    // gitclone only caches the git clone; its raw files are not proxied.
+    asset: { source: 'direct' },
   },
   {
     id: 'gitee-starst796',
@@ -83,10 +90,23 @@ export const SOURCES = [
     git: `https://gitee.com/Starst796/Stronghold-Protocol.git`,
     archive: `https://gitee.com/Starst796/Stronghold-Protocol/repository/archive/master.tar.gz`,
     raw: `https://gitee.com/Starst796/Stronghold-Protocol/raw/master/`,
+    // Gitee mirrors the game repo, not the art dumps (yuanyan / ArknightsAssets / Ark-Models / Kengxxiao):
+    // the art goes through the GitHub prefix proxy with the tool's default prefix.
+    asset: { source: 'mirror' },
   }
 ];
 
 export const sourceById = (id) => SOURCES.find((s) => s.id === id) || SOURCES[0];
+
+/**
+ * Which route the art / audio download takes for the chosen download source, i.e. what the launcher
+ * passes to the game's `tools/fetch-assets.mjs` (`--asset-source`, `SP_GITHUB_PROXY`). Picking an
+ * accelerated source must accelerate the assets too — the asset dumps always come from GitHub, even
+ * when the game repo itself was cloned from Gitee.
+ * @param {object} cfg launcher config (`downloadSource`)
+ * @returns {{source:'direct'|'mirror', proxy?:string}}
+ */
+export const assetRouteOf = (cfg) => sourceById(cfg?.downloadSource).asset || { source: 'direct' };
 
 /**
  * Built-in launch presets. A preset only touches the runtime environment variables
