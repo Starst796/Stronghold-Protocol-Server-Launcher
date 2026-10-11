@@ -1,5 +1,21 @@
 # 更新记录
 
+## 1.1.7 — 2026-10-11
+
+修复游戏更新后「更新到最新版本」与「下载素材」因上游索引过期而报错的问题。
+
+### 修复
+
+- **游戏更新新增干员后，素材同步会以「素材清单将缩小」失败，并且重跑也不变**：素材计划由游戏仓库的 `tools/fetch-assets.mjs` 生成，其中干员的战斗语音 / 音效来自上游索引（`charword_table.json`、`audio_data.json`、`models_data.json`），这些索引缓存在安装目录的 `.cache/` 下、只在缺失时才重新下载。如果游戏更新（例如 0.2.3 加入 Clementia `char_4231_clemnt`）晚于上次下载索引，新干员的 32 条音频条目就进不了新清单，`fetch-assets` 的「清单永不无故缩小」保护会保留仓库里的 `data/assets.json` 并以退出码 1 结束——启动器把它显示成 `✘ 下载素材 失败（退出码 1）`（更新流程里则是 `素材下载未完成（网络问题？）`），看起来像下载失败，其实文件都在、只是索引旧了。
+- 现在素材同步会识别这一保护（`ERROR: data/assets.json NOT written — it would lose N entries`），自动补上 `--refresh-index` 重新拉取上游索引后重试一次——这正是 `fetch-assets` 自己打印的补救办法。索引新鲜时不会重试，也不会多下载任何内容。
+- **「更新到最新版本」也会自愈**：`tools/setup.mjs` 里的素材同步被上述保护拦下时（它只在报告 `.cache/assets-report.json` 里写 `manifestWritten: false` 并告警），启动器会在其后补一步「补全美术 / 音频素材（必要时刷新上游索引）」重新同步。素材仍不完整时只警告（游戏可用占位图运行），不会把已经成功的代码更新判为失败。「一键部署」「修复安装」同样处理。
+
+### 变更
+
+- `launcher/lib/repo.mjs`：新增 `syncAssets()`（素材同步，失败时按需 `--refresh-index` 重试一次）与 `assetManifestHeld()`（读游戏报告，判断仓库清单是否被保护保留）。
+- `launcher/lib/tasks.mjs`：自定义步骤（`run`）现在可以经 `ctx.trackChild()` 交出子进程，使「取消」仍能终止素材下载这类长任务。
+- 「下载素材」改用 `syncAssets()` 运行：确实无法完成时仍然报失败（与更新流程的「只警告」相区分），同时保留可取消。
+
 ## 1.1.6 — 2026-10-05
 
 修复 macOS / Linux 启动脚本的换行符（CRLF）问题。

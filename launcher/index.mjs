@@ -18,6 +18,7 @@ import {
 } from './lib/config.mjs';
 import {
   inspectInstall, installFromSource, updateFromSource, npmCommand, gitCommand, gameDir, parseChangelog, gitInfo,
+  syncAssets, assetManifestHeld,
 } from './lib/repo.mjs';
 import { checkUpdate, localHistory } from './lib/version.mjs';
 import {
@@ -135,6 +136,38 @@ const nodeStep = (label, args, dir, extra = {}) => ({
   env: prependPath(path.dirname(process.execPath), { ...process.env, ...extra.env }),
 });
 
+/**
+ * Sync art / audio through the game's tool, which retries with refreshed indexes when the manifest
+ * shrink guard trips (repo.mjs `syncAssets`). `strict` is the explicit 「下载素材」action, which must
+ * report a failure it cannot finish; without it (deploy / update flows) a remaining gap is only a
+ * warning — like the game's own tools/setup.mjs, the game still runs with placeholder art.
+ */
+async function runAssetSync(ctx, { strict }) {
+  const r = await syncAssets(config, {
+    log: (line, stream) => ctx.log(line, stream),
+    trackChild: ctx.trackChild,
+    isCancelled: ctx.isCancelled,
+  });
+  if (r.ok) return;
+  const tail = `${r.code}${r.refreshed ? '，已刷新上游索引' : ''}`;
+  if (strict) throw new Error(`素材仍未下载完整（退出码 ${tail}），可稍后重试（支持续传）`);
+  ctx.log(`素材仍未下载完整（退出码 ${tail}）；游戏仍可运行（使用占位图），可稍后点「下载素材」续传。`, 'meta');
+}
+
+/**
+ * Step after the game's tools/setup.mjs: when its asset download was stopped by the manifest shrink
+ * guard (a `.cache/` upstream index older than the operators the update added, so the committed
+ * data/assets.json was kept), sync again with refreshed indexes. A completed run does nothing here.
+ */
+const assetHealStep = (dir) => ({
+  label: '补全美术 / 音频素材（必要时刷新上游索引）',
+  run: async (ctx) => {
+    if (!assetManifestHeld(dir)) return;
+    ctx.log('上次素材同步保留了仓库里的 data/assets.json（上游索引可能已过期），重新同步…', 'meta');
+    await runAssetSync(ctx, { strict: false });
+  },
+});
+
 function deploySteps(action) {
   const cfg = config;
   const dir = gameDir(cfg);
@@ -147,15 +180,19 @@ function deploySteps(action) {
       run: (ctx) => installFromSource(cfg, { log: (line, stream) => ctx.log(line, stream) }),
     });
     steps.push(nodeStep('安装依赖、前端库并下载素材（可中断续传）', [path.join('tools', 'setup.mjs'), '--quiet'], dir, { env: setupEnv }));
+    steps.push(assetHealStep(dir));
   } else if (action === 'repair') {
     steps.push(nodeStep('检查并补全依赖与素材（可中断续传）', [path.join('tools', 'setup.mjs'), '--quiet'], dir, { env: setupEnv }));
+    steps.push(assetHealStep(dir));
   } else if (action === 'deps') {
     const npm = npmCommand();
     if (npm) steps.push({ label: '安装 Node 依赖（npm install）', cmd: npm, args: ['install', '--no-audit', '--no-fund'], cwd: dir });
     steps.push(nodeStep('复制前端库到 public/vendor', [path.join('tools', 'vendor.mjs')], dir, { optional: !npm }));
   } else if (action === 'assets') {
-    steps.push(nodeStep('下载美术 / 音频素材（约 250 MB，可续传）',
-      [path.join('tools', 'fetch-assets.mjs'), `--concurrency=${cfg.assetConcurrency}`], dir));
+    steps.push({
+      label: '下载美术 / 音频素材（约 250 MB，可续传）',
+      run: (ctx) => runAssetSync(ctx, { strict: true }),
+    });
   } else if (action === 'doctor') {
     steps.push(nodeStep('运行环境诊断', [path.join('tools', 'doctor.mjs')], dir, { optional: true }));
   } else {
@@ -186,6 +223,7 @@ async function runUpdate(force) {
   const steps = [
     { label: '获取最新版本', run: (ctx) => updateFromSource(config, { force, log: (line, stream) => ctx.log(line, stream) }) },
     nodeStep('同步依赖与素材', [path.join('tools', 'setup.mjs'), '--quiet'], dir, { env: { SP_LAUNCHER: '1' } }),
+    assetHealStep(dir),
   ];
   const promise = taskRunner.run('update', force ? '强制更新' : '更新到最新版本', steps);
   promise.then(async (r) => {

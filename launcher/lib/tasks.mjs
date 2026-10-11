@@ -62,6 +62,9 @@ export class TaskRunner {
           await step.run({
             log: (line, stream = 'stdout') => this.log({ channel: kind, stream, line }),
             isCancelled: () => this.cancelled,
+            // A run-step that spawns a long child (the asset download) hands it over here so cancel()
+            // can kill it too; the cmd path does the same with `this.current` below.
+            trackChild: (handle) => { this.current = handle ?? null; },
           });
         } else {
           const handle = runStream(step.cmd, step.args || [], {

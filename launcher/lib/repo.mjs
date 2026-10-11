@@ -11,7 +11,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
-  exists, readJson, which, hasCommand, IS_WIN, formatBytes, dirSize, runCapture, runStream,
+  exists, readJson, which, hasCommand, IS_WIN, formatBytes, dirSize, runCapture, runStream, prependPath,
 } from './util.mjs';
 import { sourceById, installDirOf, ROOT } from './config.mjs';
 
@@ -342,4 +342,68 @@ export async function updateFromSource(cfg, { force = false, log = () => {} } = 
   }
   log('✔ 已用最新压缩包覆盖代码（素材、依赖与缓存保留）');
   return { mode: 'archive' };
+}
+
+// ------------------------------------------------------------------------------------------------
+// Art / audio assets
+// ------------------------------------------------------------------------------------------------
+
+/**
+ * The line the game's `tools/fetch-assets.mjs` prints when its manifest shrink guard refuses to write
+ * `data/assets.json` (docs/ASSETS.md "The manifest never shrinks by accident"): the rebuilt manifest
+ * would lose entries the committed one still has. On an existing checkout that happens when the cached
+ * upstream indexes (`charword_table.json`, `audio_data.json`, `models_data.json` under `.cache/`) predate
+ * an operator or model the game update added, so the plan cannot reproduce their audio entries.
+ */
+export const ASSET_SHRINK_RE = /NOT written — it would lose \d+ entries/;
+
+/**
+ * Did the game's last `tools/fetch-assets.mjs` run keep the committed manifest? `tools/setup.mjs` only
+ * warns when the asset download fails, so its report (`.cache/assets-report.json`) is the cheapest way
+ * to tell "assets still incomplete" from "assets fine" after it ran.
+ * @param {string} dir game install directory
+ */
+export function assetManifestHeld(dir) {
+  return readJson(path.join(dir, '.cache', 'assets-report.json'), null)?.manifestWritten === false;
+}
+
+/**
+ * Sync the game's art / audio by running `tools/fetch-assets.mjs`, retrying once with `--refresh-index`
+ * when the manifest shrink guard blocked the write. The refreshed indexes are the remedy the tool prints
+ * itself; without this the failure surfaces as a hard "下载素材失败（退出码 1）" on every install whose
+ * `.cache/` indexes predate a game update that added an operator.
+ * @param {object} cfg launcher config (`installDir`, `assetConcurrency`)
+ * @param {{log?:(line:string,stream?:string)=>void, trackChild?:(handle:any)=>void, isCancelled?:()=>boolean}} [o]
+ *   `trackChild` hands the running child over so the task runner's cancel can still kill it;
+ *   `isCancelled` suppresses the retry after the user cancelled.
+ * @returns {Promise<{ok:boolean, code:number, refreshed:boolean}>} `refreshed` = retried with new indexes
+ */
+export async function syncAssets(cfg, { log = () => {}, trackChild = () => {}, isCancelled = () => false } = {}) {
+  const dir = gameDir(cfg);
+  const base = [path.join('tools', 'fetch-assets.mjs'), `--concurrency=${cfg.assetConcurrency || 16}`];
+  const attempt = async (args) => {
+    const lines = [];
+    const handle = runStream(process.execPath, args, {
+      cwd: dir,
+      env: prependPath(path.dirname(process.execPath)),
+      onLine: (stream, line) => { lines.push(line); log(line, stream); },
+    });
+    trackChild(handle);
+    try {
+      const res = await handle.done;
+      if (res.error) throw res.error;
+      return { code: res.code, text: lines.join('\n') };
+    } finally {
+      trackChild(null);
+    }
+  };
+
+  let r = await attempt(base);
+  let refreshed = false;
+  if (r.code !== 0 && !isCancelled() && ASSET_SHRINK_RE.test(r.text)) {
+    log('素材清单将缩小 —— 本地的上游索引可能已过期（游戏更新新增了干员 / 模型）。重新拉取索引后重试…', 'meta');
+    refreshed = true;
+    r = await attempt([...base, '--refresh-index']);
+  }
+  return { ok: r.code === 0, code: r.code, refreshed };
 }
