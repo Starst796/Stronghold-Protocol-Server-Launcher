@@ -190,10 +190,10 @@ export async function fetchCatalog(cfg, { log = () => {} } = {}) {
       writeJsonAtomic(CATALOG_FILE, cache);
       writeJsonAtomic(SEEN_FILE, { catalogVersion: catalog.catalogVersion, updatedAt: catalog.updatedAt, seenAt: nowIso() });
       for (const w of catalog.warnings) log(`⚠ ${w}`, 'stderr');
-      const ver = catalog.catalogVersion ? ` v${catalog.catalogVersion}` : '';
+      const ver = catalog.catalogVersion ? `v${catalog.catalogVersion}` : '未标注版本';
       log(moved
         ? `✔ 模组目录已更新：v${seen.catalogVersion} → ${catalog.catalogVersion}（${catalog.mods.length} 个模组，基线 ${catalog.base || '未标注'}）`
-        : `✔ 模组目录已就绪：${catalog.mods.length} 个（${ver || '未标注版本'}，基线 ${catalog.base || '未标注'}，来源 ${m.id}）`, 'stdout');
+        : `✔ 模组目录已就绪：${catalog.mods.length} 个（${ver}，基线 ${catalog.base || '未标注'}，来源 ${m.id}）`, 'stdout');
       return cache;
     } catch (e) {
       lastErr = String(e?.message || e);
