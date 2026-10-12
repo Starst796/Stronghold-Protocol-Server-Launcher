@@ -31,6 +31,15 @@ export const SELF_REPO_SLUG = 'Starst796/Stronghold-Protocol-Server-Launcher';
 export const SELF_REPO_URL = `https://github.com/${SELF_REPO_SLUG}`;
 
 /**
+ * Our relay repository for mods (see lib/mods.mjs). A fork's customization is a change to the game's
+ * *source*, which upstream's data-only packs cannot carry, so each fork is packaged once against a
+ * pinned upstream base and published here instead. Public HTTPS by default for the same reason as the
+ * launcher's own repository: every user must be able to read it without an SSH key.
+ */
+export const MODS_REPO_SLUG = 'Starst796/Stronghold-Protocol-Mods';
+export const MODS_REPO_URL = `https://github.com/${MODS_REPO_SLUG}`;
+
+/**
  * Download sources. Direct github.com git access is blocked on some networks,
  * so several community mirrors are offered; the UI can probe them ("测试速度").
  * `git` = clone URL, `archive` = tar.gz of the branch (no git needed).
@@ -171,6 +180,8 @@ export const DEFAULT_CONFIG = {
   autoUpdateCheck: true,     // check GitHub for updates on open
   autoUpdateSelf: true,      // update the launcher itself from its own repo at startup
   selfRepoUrl: SELF_REPO_URL, // public HTTPS by default so every user can self-update
+  modsRepoUrl: MODS_REPO_URL, // the relay repository whose index.json lists the mods (lib/mods.mjs)
+  enabledMods: [],           // mod ids the user selected; applied to the install on demand
   assetConcurrency: 16,      // tools/fetch-assets.mjs --concurrency
   activePreset: 'default',
   customPresets: {},
@@ -188,6 +199,8 @@ const COERCE = {
   autoUpdateCheck: (v) => v !== false,
   autoUpdateSelf: (v) => v !== false,
   selfRepoUrl: (v) => String(v || '').trim(),
+  modsRepoUrl: (v) => String(v || '').trim(),
+  enabledMods: (v) => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).slice(0, 64) : []),
   assetConcurrency: (v) => Math.min(64, Math.max(1, Number(v) || 16)),
   installDir: (v) => String(v || ''),
   downloadSource: (v) => (SOURCES.some((s) => s.id === v) ? String(v) : 'github'),

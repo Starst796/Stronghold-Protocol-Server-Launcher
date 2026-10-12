@@ -150,7 +150,7 @@ function renderMarkdown(md) {
 }
 
 // ------------------------------------------------------------------ navigation
-const PAGE_TITLES = { home: '主界面', config: '配置', terminal: '终端', about: '关于' };
+const PAGE_TITLES = { home: '主界面', config: '配置', mods: '模组', terminal: '终端', about: '关于' };
 let currentPage = 'home';
 
 function setPage(page) {
@@ -222,6 +222,22 @@ function renderShell() {
 
   const navTask = $('#nav-task');
   navTask.hidden = task.status !== 'running';
+
+  const navMods = $('#nav-mods');
+  if (navMods) {
+    const count = (S.config?.enabledMods || []).length;
+    navMods.hidden = count === 0;
+    navMods.textContent = String(count);
+  }
+  const badgeMods = $('#badge-mods');
+  if (badgeMods) {
+    const applied = S.mods?.status?.applied;
+    badgeMods.hidden = !applied;
+    if (applied) {
+      badgeMods.textContent = `模组 ${S.mods.status.mods.length}`;
+      badgeMods.title = `已应用：${S.mods.status.mods.map((m) => m.name).join('、')}`;
+    }
+  }
 }
 
 // ------------------------------------------------------------------ render: home
@@ -463,6 +479,7 @@ function fillConfigForm() {
   $('#cfg-autocheck').checked = !!c.autoUpdateCheck;
   $('#cfg-auto-self').checked = !!c.autoUpdateSelf;
   $('#cfg-self-repo').value = c.selfRepoUrl || '';
+  $('#cfg-mods-repo').value = c.modsRepoUrl || '';
   $('#cfg-open-browser').checked = !!c.openBrowser;
   $('#cfg-autostart').checked = !!c.autoStart;
   $('#cfg-install-dir').value = c.installDir;
@@ -478,6 +495,83 @@ function fillConfigForm() {
 function renderConfig() {
   renderPresets();
   if (!configDirty) fillConfigForm();
+}
+
+// ------------------------------------------------------------------ render: mods
+/** One selectable mod card — the shape the mock UI uses: a checkbox, a title, a subtitle. */
+function modCard(mod, { compact = false } = {}) {
+  const kind = (S.mods?.kinds || {})[mod.kind] || { label: mod.kind, summary: '' };
+  const notes = [];
+  if (!mod.applicable) notes.push(kind.summary || '需单独安装');
+  if (mod.base && S.mods?.base && mod.base !== S.mods.base) notes.push(`基线 ${mod.base}（目录基线 ${S.mods.base}）`);
+  if (mod.requires?.length) notes.push(`依赖 ${mod.requires.join('、')}`);
+  if (mod.conflicts?.length) notes.push(`与 ${mod.conflicts.join('、')} 冲突`);
+  if (mod.sizeBytes) notes.push(fmtBytes(mod.sizeBytes));
+  if (mod.license) notes.push(mod.license);
+  const cls = ['mod-card', mod.enabled ? 'on' : '', mod.applicable ? '' : 'off'].filter(Boolean).join(' ');
+  return `<label class="${cls}" ${mod.applicable ? '' : 'title="整份 fork 不能作为补丁应用"'}>
+      <input type="checkbox" data-mod="${escapeHtml(mod.id)}"${mod.enabled ? ' checked' : ''}${mod.applicable ? '' : ' disabled'}>
+      <span class="mod-check" aria-hidden="true"></span>
+      <span class="mod-text">
+        <b>${escapeHtml(mod.name)}<em class="mod-kind">${escapeHtml(kind.label)}</em></b>
+        ${mod.subtitle ? `<small>${escapeHtml(mod.subtitle)}</small>` : ''}
+        ${notes.length && !compact ? `<small class="mod-notes">${escapeHtml(notes.join(' · '))}</small>` : ''}
+      </span>
+    </label>`;
+}
+
+function renderMods() {
+  const m = S?.mods;
+  if (!m || !$('#mod-list')) return;
+  const st = m.status || {};
+  const installed = S.install.hasPackageJson;
+  const busy = S.task.status === 'running';
+
+  $('#mods-meta').innerHTML = [
+    ['中转仓库', m.repoUrl || '未配置', 'mono'],
+    ['目录基线', m.base || '—', ''],
+    ['可选模组', `${(m.mods || []).length} 个`, ''],
+    ['最近拉取', m.fetchedAt ? new Date(m.fetchedAt).toLocaleString('zh-CN', { hour12: false }) : '尚未拉取', ''],
+    ['安装类型', st.isRepo ? (st.hasGit ? 'git 检出（可应用模组）' : 'git 检出 · 缺少 git 命令') : '压缩包安装（不可应用）', st.canApply ? 'ok' : 'warn'],
+    ['当前状态', st.applied ? `已启用 ${st.mods.length} 个模组` : (st.dirty ? '工作区有未提交改动' : '原版'), st.applied || st.dirty ? 'warn' : 'ok'],
+  ].map(([k, v, cls]) => `<div class="status-item"><span class="k">${escapeHtml(k)}</span><span class="v ${cls}">${escapeHtml(String(v))}</span></div>`).join('');
+
+  const list = $('#mod-list');
+  if (!(m.mods || []).length) {
+    const err = m.error ? `上次拉取失败：${m.error}` : '中转仓库里还没有模组（可在仓库里按 README 的格式添加）。';
+    list.innerHTML = `<p class="fine">${escapeHtml(err)}</p>`;
+  } else {
+    list.innerHTML = m.mods.map((mod) => modCard(mod)).join('');
+  }
+  if ((m.warnings || []).length) {
+    list.insertAdjacentHTML('beforeend', `<p class="fine">${m.warnings.map((w) => escapeHtml(w)).join('<br>')}</p>`);
+  }
+
+  const selected = (S.config.enabledMods || []).length;
+  const apply = $('#btn-mods-apply');
+  apply.textContent = selected ? `应用所选模组（${selected}）` : '应用所选模组';
+  apply.disabled = busy || !selected || !st.canApply || !installed;
+  $('#btn-mods-restore').disabled = busy || !st.isRepo || !st.hasGit || !installed;
+  $('#btn-mods-none').disabled = busy || !selected;
+
+  const hints = [];
+  if (!installed) hints.push('还没有部署游戏 —— 先在「主界面」点「一键部署」。');
+  else if (!st.isRepo) hints.push('当前是压缩包解压的安装，无法应用补丁模组；删掉安装目录后用 git 方式重新「一键部署」即可。');
+  else if (!st.hasGit) hints.push('未检测到 git 命令，无法应用补丁模组。');
+  if (st.applied) hints.push('模组已应用：服务器（以及所有连进来的玩家）都会用到 modded 内容。更新游戏前请先「还原为原版」。');
+  else if (selected) hints.push('勾选已记录，点「应用所选模组」才会写入安装目录；应用后需重启服务器生效。');
+  $('#mods-hint').textContent = hints.join(' ');
+
+  const applied = $('#mods-applied');
+  if (st.applied) {
+    const rows = st.mods.map((mod) => ({
+      id: mod.id, name: mod.name, kind: mod.kind, subtitle: `v${mod.version || '?'}`, enabled: true, applicable: true,
+    }));
+    applied.innerHTML = rows.map((r) => modCard(r, { compact: true })).join('')
+      + `<p class="fine">应用时间：${st.appliedAt ? new Date(st.appliedAt).toLocaleString('zh-CN', { hour12: false }) : '—'}${st.added ? ` · 新增 ${st.added} 个文件` : ''}</p>`;
+  } else {
+    applied.innerHTML = '<p class="fine">当前是原版安装，没有启用任何模组。</p>';
+  }
 }
 
 // ------------------------------------------------------------------ render: about
@@ -568,6 +662,7 @@ function render() {
   renderHome();
   renderSelf();
   renderConfig();
+  renderMods();
   renderAbout();
   renderTaskProgress();
 }
@@ -596,6 +691,7 @@ function readConfigForm() {
     autoUpdateCheck: $('#cfg-autocheck').checked,
     autoUpdateSelf: $('#cfg-auto-self').checked,
     selfRepoUrl: $('#cfg-self-repo').value.trim(),
+    modsRepoUrl: $('#cfg-mods-repo').value.trim(),
     openBrowser: $('#cfg-open-browser').checked,
     autoStart: $('#cfg-autostart').checked,
     installDir: $('#cfg-install-dir').value.trim(),
@@ -780,6 +876,62 @@ function wire() {
     S.config = r.config;
     renderPresets();
     toast(`已保存预设「${name}」`, 'ok');
+  });
+
+  // ---- mods page
+  $('#btn-mods-refresh').addEventListener('click', async () => {
+    const btn = $('#btn-mods-refresh');
+    btn.disabled = true;
+    btn.textContent = '拉取中…';
+    try {
+      const r = await api('/api/mods/refresh', 'POST');
+      if (r.error) toast(r.error, 'warn', 7000);
+      else toast(`模组目录已更新：${r.count} 个${r.base ? `（基线 ${r.base}）` : ''}`, 'ok');
+    } catch (e) {
+      toast(`拉取失败：${e.message}`, 'error', 7000);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '刷新目录';
+    }
+  });
+
+  $('#mod-list').addEventListener('change', async (e) => {
+    const cb = e.target.closest('input[data-mod]');
+    if (!cb) return;
+    const ids = $$('#mod-list input[data-mod]').filter((i) => i.checked).map((i) => i.dataset.mod);
+    try {
+      const r = await api('/api/mods/select', 'POST', { ids });
+      S.config.enabledMods = r.config.enabledMods;
+    } catch (err) { toast(err.message, 'error'); }
+  });
+
+  $('#btn-mods-none').addEventListener('click', async () => {
+    try {
+      const r = await api('/api/mods/select', 'POST', { ids: [] });
+      S.config.enabledMods = r.config.enabledMods;
+    } catch (err) { toast(err.message, 'error'); }
+  });
+
+  $('#btn-mods-apply').addEventListener('click', async () => {
+    const ids = S.config.enabledMods || [];
+    if (!ids.length) { toast('请先勾选要启用的模组', 'warn'); return; }
+    const names = ids.map((id) => (S.mods.mods.find((m) => m.id === id) || {}).name || id);
+    const warn = `将启用 ${ids.length} 个模组：\n\n· ${names.join('\n· ')}\n\n启动器会先把安装目录还原到干净的原版，再按顺序打上这些补丁。继续？`;
+    if (!confirm(warn)) return;
+    try {
+      const r = await api('/api/mods/apply', 'POST', { ids });
+      if (r.error) toast(r.error, 'warn', 7000);
+      else { toast('开始应用模组，可在「终端」查看进度', 'ok'); setPage('terminal'); }
+    } catch (e) { toast(`应用失败：${e.message}`, 'error', 7000); }
+  });
+
+  $('#btn-mods-restore').addEventListener('click', async () => {
+    if (!confirm('还原为原版：清除安装目录里所有已应用的模组改动（你的存档与配置不受影响）。继续？')) return;
+    try {
+      const r = await api('/api/mods/restore', 'POST');
+      if (r.error) toast(r.error, 'warn', 7000);
+      else { toast('正在还原为原版，可在「终端」查看进度', 'ok'); setPage('terminal'); }
+    } catch (e) { toast(`还原失败：${e.message}`, 'error', 7000); }
   });
 
   // ---- terminal page

@@ -133,6 +133,18 @@ async function api(req, res, url, { getState, actions, logStore }) {
     case 'GET /api/changelog':
       return sendJson(res, 200, { changelog: actions.getChangelog() });
 
+    case 'POST /api/mods/refresh':
+      return sendJson(res, 200, await actions.modsRefresh());
+
+    case 'POST /api/mods/select':
+      return sendJson(res, 200, actions.modsSelect(body?.ids));
+
+    case 'POST /api/mods/apply':
+      return sendJson(res, 200, await actions.modsApply(body?.ids));
+
+    case 'POST /api/mods/restore':
+      return sendJson(res, 200, await actions.modsRestore());
+
     case 'POST /api/server/start':
       return sendJson(res, 200, await actions.serverStart());
 

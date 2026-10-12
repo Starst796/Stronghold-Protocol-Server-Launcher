@@ -20,6 +20,9 @@ import {
   inspectInstall, installFromSource, updateFromSource, npmCommand, gitCommand, gameDir, parseChangelog, gitInfo,
   syncAssets, assetManifestHeld,
 } from './lib/repo.mjs';
+import {
+  modsState, modsStatus, fetchCatalog, applyMods, restoreGame, clearLock,
+} from './lib/mods.mjs';
 import { checkUpdate, localHistory } from './lib/version.mjs';
 import {
   checkSelf as checkSelfUpdate, applySelf, selfHistory, selfVersion, selfRemote, selfBranch, isSelfRepo,
@@ -114,6 +117,7 @@ function buildState() {
     install: installInfo,
     server: game.state,
     task: taskRunner.state,
+    mods: modsState(config),
     version: versionInfo,
     checkingVersion,
     self: { ...selfInfo, updateReady: selfUpdateReady, checking: checkingSelf },
@@ -233,6 +237,14 @@ async function runDeploy(action) {
 async function runUpdate(force) {
   if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
   if (!exists(path.join(gameDir(config), 'package.json'))) return { started: false, error: '尚未部署游戏，请先执行「一键部署」。' };
+  // A modded install has a dirty working tree, so a fast-forward update cannot apply (and would
+  // silently discard the mods). Say so instead of letting git refuse with a cryptic message.
+  if (modsStatus(config).applied) {
+    return {
+      started: false,
+      error: '当前安装启用了模组：请先在「模组」页点「还原为原版」再更新（更新会覆盖模组改动），或勾选「强制更新」丢弃它们。',
+    };
+  }
   const dir = gameDir(config);
   const steps = [
     { label: '获取最新版本', run: (ctx) => updateFromSource(config, { force, log: (line, stream) => ctx.log(line, stream) }) },
@@ -241,6 +253,8 @@ async function runUpdate(force) {
   ];
   const promise = taskRunner.run('update', force ? '强制更新' : '更新到最新版本', steps);
   promise.then(async (r) => {
+    // A forced update resets the tree to the fetched master, so any mod is gone: drop the stale lock.
+    if (r.ok && force) clearLock();
     refreshInstall();
     if (r.ok) versionInfo = await checkUpdate(config, { deep: false });
     emitState();
@@ -304,6 +318,61 @@ const actions = {
     }));
     for (const r of results) log({ channel: 'launcher', stream: r.ok ? 'stdout' : 'stderr', line: `${r.ok ? '✔' : '✘'} ${r.label} — ${r.ms} ms${r.detail ? ` · ${r.detail}` : ''}` });
     return { results };
+  },
+
+  // ---------------------------------------------------------------- mods (lib/mods.mjs)
+  async modsRefresh() {
+    log({ channel: 'mods', stream: 'meta', line: `▶ 获取模组目录（${config.modsRepoUrl || '未配置'}）…` });
+    try {
+      const catalog = await fetchCatalog(config, { log: (line, stream) => log({ channel: 'mods', stream: stream || 'stdout', line }) });
+      // Drop a selection whose entry left the catalog, so the checkbox state can never point at nothing.
+      const ids = new Set(catalog.mods.map((m) => m.id));
+      const kept = (config.enabledMods || []).filter((id) => ids.has(id));
+      if (kept.length !== (config.enabledMods || []).length) config = patchConfig({ enabledMods: kept });
+      emitState();
+      return { ok: true, count: catalog.mods.length, base: catalog.base, fetchedAt: catalog.fetchedAt };
+    } catch (e) {
+      log({ channel: 'mods', stream: 'stderr', line: `获取模组目录失败：${e?.message || e}` });
+      return { ok: false, error: String(e?.message || e) };
+    }
+  },
+
+  modsSelect(ids) {
+    config = patchConfig({ enabledMods: Array.isArray(ids) ? ids : [] });
+    emitState();
+    return { ok: true, config };
+  },
+
+  modsApply(ids) {
+    if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
+    const list = Array.isArray(ids) && ids.length ? ids : (config.enabledMods || []);
+    if (!list.length) return { started: false, error: '请先勾选要启用的模组。' };
+    if (!exists(path.join(gameDir(config), 'package.json'))) return { started: false, error: '尚未部署游戏，请先「一键部署」。' };
+    config = patchConfig({ enabledMods: list });
+    const promise = taskRunner.run('mods', '应用模组', [
+      { label: `应用 ${list.length} 个模组`, run: (ctx) => applyMods(config, list, { log: (line, stream) => ctx.log(line, stream) }) },
+    ]);
+    promise.then((r) => {
+      refreshInstall();
+      emitState();
+      toast(r.ok ? '模组已应用 —— 重启服务器后生效' : '模组应用失败，可在「终端」查看原因', r.ok ? 'ok' : 'error', 8000);
+    });
+    return { started: true };
+  },
+
+  modsRestore() {
+    if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
+    if (!exists(path.join(gameDir(config), 'package.json'))) return { started: false, error: '尚未部署游戏。' };
+    config = patchConfig({ enabledMods: [] });
+    const promise = taskRunner.run('mods', '还原为原版', [
+      { label: '还原为原版（清除所有模组）', run: (ctx) => restoreGame(config, { log: (line, stream) => ctx.log(line, stream) }) },
+    ]);
+    promise.then((r) => {
+      refreshInstall();
+      emitState();
+      toast(r.ok ? '已还原为原版（重启服务器后生效）' : '还原失败', r.ok ? 'ok' : 'error', 8000);
+    });
+    return { started: true };
   },
 
   deploy: runDeploy,
@@ -571,6 +640,8 @@ async function main() {
 
   if (config.autoUpdateCheck && installInfo.hasPackageJson) {
     setTimeout(() => { actions.checkVersion(false); }, 800);
+    // The mod catalog is a small JSON file in our relay repo; refresh it in the background too.
+    setTimeout(() => { actions.modsRefresh(); }, 1400);
   }
 
   process.on('SIGINT', () => { console.log('\n收到 Ctrl+C，正在退出…'); shutdown(0); });

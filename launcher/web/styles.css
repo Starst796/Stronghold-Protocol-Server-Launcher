@@ -217,6 +217,41 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .preset small { color: var(--text-faint); font-size: 11.5px; display: block; margin-top: 2px; }
 .preset .del { color: #ff9e97; }
 
+/* ------------------------------------------------- mods */
+.mod-list { display: flex; flex-direction: column; gap: 10px; }
+.mod-card {
+  display: flex; align-items: center; gap: 12px;
+  border: 1px solid var(--border); background: var(--panel-2);
+  border-radius: 10px; padding: 12px 14px; cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+.mod-card:hover { border-color: #35455a; }
+.mod-card.on { border-color: var(--accent); background: var(--accent-soft); }
+.mod-card.off { opacity: .55; cursor: not-allowed; }
+.mod-card input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+.mod-check {
+  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 7px; position: relative;
+  border: 1px solid var(--border); background: #0e141c;
+}
+.mod-card.on .mod-check { background: var(--accent); border-color: var(--accent); }
+.mod-card.on .mod-check::after {
+  content: ''; position: absolute; left: 7px; top: 3px; width: 6px; height: 11px;
+  border: solid #08160d; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.mod-card.off .mod-check { background: #10161e; }
+.mod-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.mod-text b { font-size: 13.5px; color: var(--text); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mod-kind {
+  font-style: normal; font-weight: 500; font-size: 10.5px; color: var(--text-faint);
+  border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; background: var(--panel);
+}
+.mod-text small { color: var(--text-dim); font-size: 12px; }
+.mod-text small.mod-notes { color: var(--text-faint); }
+.mod-actions { margin-top: 14px; }
+.mod-list.compact .mod-card { padding: 9px 12px; }
+.mod-list.compact .mod-check { width: 18px; height: 18px; border-radius: 6px; }
+.mod-list.compact .mod-card.on .mod-check::after { left: 5px; top: 2px; width: 5px; height: 9px; }
+
 /* ------------------------------------------------- source */
 .source-results { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
 .source-results li { display: flex; gap: 8px; font-size: 12.5px; font-family: var(--mono); color: var(--text-dim); }

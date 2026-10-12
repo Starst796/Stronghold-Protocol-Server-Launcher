@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process';
 import { exists, killTree, openExternal, sleep, fetchWithTimeout, localAddresses } from './util.mjs';
 import { serverEnv } from './config.mjs';
 import { gameDir } from './repo.mjs';
+import { modsEnv } from './mods.mjs';
 
 /** Try to TCP-connect to a port. */
 export function probePort(port, host = '127.0.0.1', timeout = 900) {
@@ -109,7 +110,9 @@ export class GameServer {
       return this.#fail(`端口 ${cfg.port} 已被其他程序占用，请在「配置」里换一个端口。`);
     }
 
-    const env = { ...process.env, ...serverEnv(cfg) };
+    // `modsEnv` adds SP_MODS=<ids> when mods are applied, so the server (and a mod that reads it) can
+    // tell it is running modded content.
+    const env = { ...process.env, ...serverEnv(cfg), ...modsEnv() };
     const child = spawn(process.execPath, [entry], { cwd: dir, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     this.child = child;
     this.#patch({ pid: child.pid });

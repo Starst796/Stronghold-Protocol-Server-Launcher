@@ -25,6 +25,7 @@ export class EventBus {
 export const CHANNELS = {
   launcher: '启动器',
   deploy: '部署',
+  mods: '模组',
   server: '服务器',
   update: '更新',
 };
