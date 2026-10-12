@@ -366,6 +366,180 @@ function discardWorktree(dir) {
   gitRun(dir, ['checkout', '--', '.'], 60000);
 }
 
+// ------------------------------------------------------------------------------------------------
+// Semantic merging of minified data files
+// ------------------------------------------------------------------------------------------------
+
+// `data/*.json` are minified onto a single line, so any change replaces that whole line: two mods that
+// touch the same file conflict textually even when they change different records. For those files we
+// can do better than failing — a three-way merge at the *JSON* level, key by key.
+//
+// Two properties make this safe rather than clever:
+//   * the files round-trip exactly (`JSON.stringify(JSON.parse(text)) === text`), so a merged value is
+//     written back in the project's own canonical minified form and nothing else in the file moves;
+//   * the merge is conservative — it only combines changes that are provably independent and reports a
+//     conflict for everything else, so it cannot quietly produce a file that means something else.
+
+/** Absent key marker, so "removed on one side" is distinguishable from "never there". */
+const MISSING = Symbol('missing');
+
+/** Deep equality over parsed JSON. Objects compare by key set, not key order. */
+function jsonEqual(a, b) {
+  if (a === b) return true;
+  if (a === MISSING || b === MISSING || a === null || b === null) return false;
+  if (typeof a !== 'object' || typeof b !== 'object') return false;
+  const aArr = Array.isArray(a);
+  if (aArr !== Array.isArray(b)) return false;
+  if (aArr) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!jsonEqual(a[i], b[i])) return false;
+    return true;
+  }
+  const ak = Object.keys(a);
+  if (ak.length !== Object.keys(b).length) return false;
+  for (const k of ak) if (!Object.hasOwn(b, k) || !jsonEqual(a[k], b[k])) return false;
+  return true;
+}
+
+const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+const atKey = (o, k) => (isPlainObject(o) && Object.hasOwn(o, k) ? o[k] : MISSING);
+
+/**
+ * Merge `theirs` into `ours` over their common `base`, recursively.
+ * Exported for tests and tools; the mod manager is its only production caller.
+ * @returns {{ok:true, value:unknown}|{ok:false, path:string}} the first disagreement's path when it fails
+ */
+export function mergeJson3(base, ours, theirs, at = '$') {
+  // One side untouched, or both made the same change: nothing to reconcile.
+  if (jsonEqual(ours, theirs)) return { ok: true, value: ours };
+  if (jsonEqual(base, ours)) return { ok: true, value: theirs };
+  if (jsonEqual(base, theirs)) return { ok: true, value: ours };
+  // Both sides changed: only two plain objects can be combined key by key. Arrays are deliberately not
+  // merged element-wise — reordering or inserting into one is exactly where a guess would be wrong.
+  if (isPlainObject(base) && isPlainObject(ours) && isPlainObject(theirs)) {
+    const out = {};
+    const keys = [...Object.keys(ours)];
+    for (const k of Object.keys(theirs)) if (!Object.hasOwn(ours, k)) keys.push(k);
+    for (const k of keys) {
+      const r = mergeJson3(atKey(base, k), atKey(ours, k), atKey(theirs, k), `${at}.${k}`);
+      if (!r.ok) return r;
+      if (r.value !== MISSING) out[k] = r.value;
+    }
+    return { ok: true, value: out };
+  }
+  return { ok: false, path: at };
+}
+
+const stripNl = (s) => String(s).replace(/\n+$/, '');
+
+/** Whether `text` is exactly what the project writes: minified, so a merged value can go back as-is. */
+function isCanonicalJson(text) {
+  try { return JSON.stringify(JSON.parse(text)) === stripNl(text); } catch { return false; }
+}
+
+/**
+ * One entry per file of a unified diff: its path and the full text on each side. Only whole-file
+ * hunks are usable (a minified data file is one line), which is exactly what this records.
+ */
+export function patchFileSections(patchText) {
+  const sections = [];
+  let cur = null;
+  for (const raw of String(patchText).split('\n')) {
+    const dm = /^diff --git a\/(.+) b\/(.+)$/.exec(raw);
+    if (dm) {
+      cur = { rel: dm[2], oldLines: [], newLines: [], isNew: false, isDelete: false, inHunk: false };
+      sections.push(cur);
+      continue;
+    }
+    if (!cur) continue;
+    if (raw.startsWith('new file mode')) { cur.isNew = true; continue; }
+    if (raw.startsWith('deleted file mode')) { cur.isDelete = true; continue; }
+    if (raw.startsWith('--- ')) { if (raw === '--- /dev/null') cur.isNew = true; continue; }
+    if (raw.startsWith('+++ ')) { if (raw === '+++ /dev/null') cur.isDelete = true; continue; }
+    if (raw.startsWith('@@')) { cur.inHunk = true; continue; }
+    if (/^(index |similarity |dissimilarity |rename |old mode |new mode |literal |GIT binary patch)/.test(raw)) continue;
+    if (raw.startsWith('\\ No newline')) continue;
+    if (!cur.inHunk) continue;
+    if (raw.startsWith('-')) cur.oldLines.push(raw.slice(1));
+    else if (raw.startsWith('+')) cur.newLines.push(raw.slice(1));
+  }
+  return sections;
+}
+
+/**
+ * Resolve one file of a patch that did not apply, by merging its JSON at key level instead of by line.
+ * `ours` is the worktree as it stands (the base plus whatever has been applied so far), the patch's own
+ * "before" text is its pre-image, and its "after" text is what this mod wants.
+ *
+ * The patch's pre-image — not `HEAD` — is the right base: it is the file as this patch saw it, which for
+ * the second and later patches of one mod is the state the first one produced.
+ * @returns {boolean} whether this file was merged and written
+ * @throws when both sides changed the same key (a real conflict the user must see)
+ */
+function semanticMergeJson(dir, rel, section, { log = () => {} } = {}) {
+  if (section.isDelete || section.isNew || !/\.json$/i.test(rel)) return false;
+  if (section.oldLines.length !== 1 || section.newLines.length !== 1) return false;
+
+  // Only reason about single-line files the project writes in canonical minified form: then a merged
+  // value goes back byte-identically and nothing else in the file moves.
+  const baseText = stripNl(section.oldLines[0]);
+  const nextText = stripNl(section.newLines[0]);
+  if (!isCanonicalJson(baseText) || !isCanonicalJson(nextText)) return false;
+
+  const full = path.join(dir, rel);
+  const oursText = exists(full) ? stripNl(fs.readFileSync(full, 'utf8')) : baseText;
+  let base, ours, theirs;
+  try {
+    base = JSON.parse(baseText);
+    ours = oursText ? JSON.parse(oursText) : base;
+    theirs = JSON.parse(nextText);
+  } catch { return false; }
+
+  const merged = mergeJson3(base, ours, theirs);
+  if (!merged.ok) {
+    throw new Error(
+      `${rel} 的 ${merged.path} 处被两个模组同时修改（单行压缩数据无法按行合并，语义合并也判定为冲突）。\n`
+      + '请在目录里声明这两个模组 conflicts，或只启用其中一个。',
+    );
+  }
+  fs.writeFileSync(full, JSON.stringify(merged.value) + (section.newLines[0].endsWith('\n') || section.oldLines[0].endsWith('\n') ? '\n' : ''));
+  log(`   语义合并：${rel} 按 JSON 键合并成功（双方改的是不同条目）。`, 'stdout');
+  return true;
+}
+
+/**
+ * Apply a patch that did not apply as a whole, file by file, so a minified data file can be merged at
+ * the JSON level instead of failing the entire mod. The strict whole-patch attempt left nothing behind,
+ * so the worktree is still "base + the mods so far" — which is `ours` for the merge.
+ * @returns {{ok:true}|{ok:false, files:string[]}} the files that could not be resolved, if any
+ */
+function resolvePatchFileByFile(dir, patchFile, { log = () => {} } = {}) {
+  const sections = patchFileSections(fs.readFileSync(patchFile, 'utf8'));
+  if (!sections.length) return { ok: false, files: [] };
+  const failed = [];
+  // `git apply --3way` uses the index as its "ours" side, so it refuses with "does not match index"
+  // while earlier mods' edits are unstaged. Stage the worktree for the pass and unstage it afterwards:
+  // the changes must stay unstaged, because 「还原为原版」 and the lock file's list of added files both
+  // read the index/worktree split.
+  gitRun(dir, ['add', '-A'], 180000);
+  try {
+    for (const section of sections) {
+      if (!section.rel || !isSafeRel(section.rel)) return { ok: false, files: [section.rel || '(?)'] };
+      const one = (extra) => runCapture(
+        gitCommand(), ['-C', dir, 'apply', '-p1', ...extra, '--whitespace=nowarn', `--include=${section.rel}`, patchFile], { timeout: 180000 },
+      );
+      if (one([]).ok) continue;
+      if (semanticMergeJson(dir, section.rel, section, { log })) continue;
+      if (one(['--3way']).ok) continue;
+      failed.push(section.rel);
+    }
+  } finally {
+    gitRun(dir, ['reset', '-q'], 60000);
+  }
+  if (failed.length) log(`   以下文件既不能直接应用、也不能合并（改动真正重叠）：${failed.slice(0, 6).join('、')}${failed.length > 6 ? ' …' : ''}`, 'meta');
+  return failed.length ? { ok: false, files: failed } : { ok: true };
+}
+
 /** Apply one mod: a patch series, or a set of copied files. */
 async function applyOne(cfg, catalog, mod, { log }) {
   const dir = gameDir(cfg);
@@ -380,19 +554,24 @@ async function applyOne(cfg, catalog, mod, { log }) {
       const file = path.join(work, `${String(i + 1).padStart(3, '0')}.patch`);
       await downloadCatalogFile(catalog, rel, file, { log });
 
-      // Strict first: an exact patch applies cleanly and touches nothing else. When it does not
-      // (upstream moved the surrounding lines), retry with a three-way merge, which resolves that
-      // whole class of context drift instead of making the user wait for a re-package.
+      // Strict first: an exact patch applies cleanly and touches nothing else. When it does not, the
+      // per-file pass resolves what it can — a minified data file through the JSON merge (which is what
+      // lets two content mods stack), anything else through a three-way merge (context drift).
       const apply = (extra) => runCapture(gitCommand(), ['-C', dir, 'apply', '-p1', ...extra, '--whitespace=nowarn', file], { timeout: 180000 });
-      let r = apply([]);
-      if (!r.ok) {
-        log(`   补丁 ${rel} 未直接应用，改用三方合并重试…`, 'meta');
-        r = apply(['--3way']);
-        if (!r.ok) {
+      if (!apply([]).ok) {
+        log(`   补丁 ${rel} 未直接应用，逐文件尝试三方合并 / JSON 语义合并…`, 'meta');
+        const res = resolvePatchFileByFile(dir, file, { log });
+        if (!res.ok) {
           discardWorktree(dir);
-          const detail = (r.out || '').split('\n').slice(0, 10).join('\n');
+          if (res.files.length) {
+            throw new Error(
+              `补丁未能应用（${rel}）：${res.files.length} 个文件与已应用的改动重叠，无法自动合并。\n`
+              + `  · ${res.files.slice(0, 8).join('\n  · ')}\n`
+              + '这通常说明它与另一个模组改了同一处代码。请在目录里声明这两个模组 conflicts，或只启用其中一个。',
+            );
+          }
           throw new Error(
-            `补丁未能应用（${rel}）：三方合并也留下了冲突。\n${detail}\n`
+            `补丁未能应用（${rel}），且无法自动合并。\n`
             + '这个模组多半与当前上游版本不匹配：点「还原为原版」后重试，或让中转仓库针对当前上游版本重新打包。',
           );
         }
@@ -426,6 +605,9 @@ export async function restoreGame(cfg, { log = () => {} } = {}) {
   const lock = readLock();
   if (!isGitRepo(dir) || !gitCommand()) { clearLock(); return { ok: true, skipped: true }; }
 
+  // Unstage first: `git checkout -- .` restores from the index, so a staged tree (an interrupted mod
+  // apply) would otherwise come back as-is instead of returning to the base.
+  gitRun(dir, ['reset', '-q'], 60000);
   const r = gitRun(dir, ['checkout', '--', '.'], 60000);
   if (!r.ok) throw new Error(`还原失败：${(r.out || '').split('\n')[0]}`);
 
