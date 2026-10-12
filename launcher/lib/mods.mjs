@@ -82,6 +82,7 @@ export function normalizeCatalog(json) {
     catalogVersion: str(json?.catalogVersion, 40),
     updatedAt: str(json?.updatedAt, 40),
     base: str(json?.base, 40),
+    baseCommit: str(json?.baseCommit, 40),
     mods: [],
     warnings,
   };
@@ -109,6 +110,7 @@ export function normalizeCatalog(json) {
       subtitle: str(raw?.subtitle, 160),
       version: str(raw?.version, 40),
       base: str(raw?.base, 40) || out.base,
+      baseCommit: str(raw?.baseCommit, 40) || out.baseCommit,
       order: Number.isFinite(Number(raw?.order)) ? Number(raw.order) : 1000,
       requires: (Array.isArray(raw?.requires) ? raw.requires : []).map((x) => str(x, 64)).filter(Boolean),
       conflicts: (Array.isArray(raw?.conflicts) ? raw.conflicts : []).map((x) => str(x, 64)).filter(Boolean),
@@ -272,6 +274,7 @@ export function modsStatus(cfg, { deep = false } = {}) {
     hasGit,
     canApply: isRepo && hasGit,
     base: lock?.base || null,
+    baseCommit: lock?.baseCommit || null,
     appliedAt: lock?.appliedAt || null,
     mods,
     applied: mods.length > 0,
@@ -305,6 +308,7 @@ export function modsState(cfg) {
     updatedAt: catalog.updatedAt || null,
     movedFrom: catalog.movedFrom || null,
     base: catalog.base || null,
+    baseCommit: catalog.baseCommit || null,
     fetchedAt: catalog.fetchedAt || null,
     via: catalog.via || null,
     error: catalog.error || null,
@@ -313,6 +317,7 @@ export function modsState(cfg) {
     mods: (catalog.mods || []).map((m) => ({ ...m, enabled: enabled.has(m.id) })),
     selected: [...enabled],
     status: modsStatus(cfg),
+    preflight: checkBase(cfg),
   };
 }
 
@@ -333,8 +338,11 @@ function selectMods(catalog, ids) {
   }
   if (!chosen.length) throw new Error('没有选择任何模组。');
   for (const mod of chosen) {
-    if (mod.base && catalog.base && mod.base !== catalog.base) {
-      throw new Error(`「${mod.name}」针对 ${mod.base}，而目录基线是 ${catalog.base}，不能混用。`);
+    // Compare the pinned commit when both sides carry one (it is exact); fall back to the ref label.
+    const modBase = mod.baseCommit || mod.base;
+    const catBase = catalog.baseCommit || catalog.base;
+    if (modBase && catBase && modBase !== catBase) {
+      throw new Error(`「${mod.name}」针对 ${mod.base || mod.baseCommit}，而目录基线是 ${catalog.base || catalog.baseCommit}，不能混用。`);
     }
   }
   const have = new Set(chosen.map((m) => m.id));
@@ -347,6 +355,16 @@ function selectMods(catalog, ids) {
     }
   }
   return chosen.sort((a, b) => a.order - b.order);
+}
+
+/**
+ * Put the tracked files back and clear the index. Used after a failed `--3way` apply, which leaves
+ * conflict markers in the working tree and unmerged entries in the index; what the attempt *added*
+ * (untracked) is removed by the caller, which knows the pre-apply baseline.
+ */
+function discardWorktree(dir) {
+  gitRun(dir, ['reset', '-q'], 30000);
+  gitRun(dir, ['checkout', '--', '.'], 60000);
 }
 
 /** Apply one mod: a patch series, or a set of copied files. */
@@ -362,10 +380,23 @@ async function applyOne(cfg, catalog, mod, { log }) {
       if (!isSafeRel(rel)) throw new Error(`补丁路径不合法：${rel}`);
       const file = path.join(work, `${String(i + 1).padStart(3, '0')}.patch`);
       await downloadCatalogFile(catalog, rel, file, { log });
-      const r = runCapture(gitCommand(), ['-C', dir, 'apply', '-p1', '--whitespace=nowarn', file], { timeout: 180000 });
+
+      // Strict first: an exact patch applies cleanly and touches nothing else. When it does not
+      // (upstream moved the surrounding lines), retry with a three-way merge, which resolves that
+      // whole class of context drift instead of making the user wait for a re-package.
+      const apply = (extra) => runCapture(gitCommand(), ['-C', dir, 'apply', '-p1', ...extra, '--whitespace=nowarn', file], { timeout: 180000 });
+      let r = apply([]);
       if (!r.ok) {
-        const detail = (r.out || '').split('\n').slice(0, 8).join('\n');
-        throw new Error(`补丁未能应用（${rel}）：\n${detail}\n多半是这个模组与当前上游版本不匹配 —— 点「还原为原版」后重试，或让中转仓库重新打包该模组。`);
+        log(`   补丁 ${rel} 未直接应用，改用三方合并重试…`, 'meta');
+        r = apply(['--3way']);
+        if (!r.ok) {
+          discardWorktree(dir);
+          const detail = (r.out || '').split('\n').slice(0, 10).join('\n');
+          throw new Error(
+            `补丁未能应用（${rel}）：三方合并也留下了冲突。\n${detail}\n`
+            + '这个模组多半与当前上游版本不匹配：点「还原为原版」后重试，或让中转仓库针对当前上游版本重新打包。',
+          );
+        }
       }
     }
     return;
@@ -420,13 +451,46 @@ export async function restoreGame(cfg, { log = () => {} } = {}) {
   return { ok: true };
 }
 
+/** The install's pinned commit and version, for the preflight check. */
+function installIdentity(dir) {
+  const pkg = readJson(path.join(dir, 'package.json'), null);
+  const head = isGitRepo(dir) && gitCommand() ? (gitRun(dir, ['rev-parse', 'HEAD'], 15000).out || '').trim() : '';
+  const ref = isGitRepo(dir) && gitCommand() ? (gitRun(dir, ['describe', '--tags', '--abbrev=0'], 15000).out || '').trim() : '';
+  return { version: pkg?.version ?? null, head: head || null, ref: ref || null };
+}
+
+/**
+ * Whether the install is the exact base the catalog was packaged against. Patches are only guaranteed
+ * against that one commit, so a mismatch is worth saying *before* the first `git apply` rather than
+ * after it fails — or, worse, succeeds with the wrong meaning. When the catalog does not pin a commit
+ * (an older/hand-written catalog) there is nothing to compare and the check passes.
+ * @param {object} cfg
+ * @returns {{ok:boolean, baseCommit:string|null, baseRef:string|null, installHead:string|null,
+ *   installVersion:string|null, installRef:string|null}}
+ */
+export function checkBase(cfg) {
+  const catalog = readCatalog();
+  const identity = installIdentity(gameDir(cfg));
+  const baseCommit = catalog.baseCommit || null;
+  return {
+    ok: !baseCommit || !identity.head || identity.head === baseCommit,
+    baseCommit,
+    baseRef: catalog.base || null,
+    installHead: identity.head,
+    installVersion: identity.version,
+    installRef: identity.ref,
+  };
+}
+
 /**
  * Apply the selected mods on top of a freshly restored install.
  * @param {object} cfg launcher config
  * @param {string[]} ids the mod ids to enable
- * @param {{log?:(line:string,stream?:string)=>void}} [o]
+ * @param {{log?:(line:string,stream?:string)=>void, allowBaseMismatch?:boolean}} [o]
+ *   `allowBaseMismatch` proceeds even though the install is not at the catalog's pinned base (the UI
+ *   asks the user first); without it a mismatch is refused with an explanation.
  */
-export async function applyMods(cfg, ids, { log = () => {} } = {}) {
+export async function applyMods(cfg, ids, { log = () => {}, allowBaseMismatch = false } = {}) {
   const dir = gameDir(cfg);
   if (!exists(path.join(dir, 'package.json'))) throw new Error('尚未部署游戏，请先「一键部署」。');
   if (!gitCommand()) throw new Error('应用模组需要 git（以补丁方式安装）。请安装 git 后重试。');
@@ -435,20 +499,41 @@ export async function applyMods(cfg, ids, { log = () => {} } = {}) {
   const catalog = readCatalog();
   const mods = selectMods(catalog, ids);
 
+  const pre = checkBase(cfg);
+  if (!pre.ok) {
+    const at = pre.installRef ? `${pre.installRef}（${String(pre.installHead).slice(0, 8)}）` : String(pre.installHead).slice(0, 8);
+    const want = pre.baseRef ? `${pre.baseRef}（${String(pre.baseCommit).slice(0, 8)}）` : String(pre.baseCommit).slice(0, 8);
+    const msg = `安装目录是 ${at}，而模组目录针对 ${want} —— 补丁只保证在前者等于后者时可用。`
+      + '\n请先把游戏更新/切换到该版本，或等中转仓库针对当前版本重新打包。';
+    if (!allowBaseMismatch) throw new Error(msg + '\n（确实想试试的话，界面上会再问一次。）');
+    log(`⚠ ${msg}\n  已按你的选择继续尝试。`, 'stderr');
+  }
+
   // Patches only apply to the base, so always start from a clean tree.
   log('▶ 还原到干净的上游版本…', 'meta');
   const before = new Set(gitStatus(dir).untracked);
   await restoreGame(cfg, { log });
   const baseline = new Set(gitStatus(dir).untracked);
 
-  for (const mod of mods) {
-    log(`▶ 应用模组：${mod.name}（${MOD_KINDS[mod.kind].label}${mod.version ? ` v${mod.version}` : ''}）`, 'meta');
-    await applyOne(cfg, catalog, mod, { log });
+  try {
+    for (const mod of mods) {
+      log(`▶ 应用模组：${mod.name}（${MOD_KINDS[mod.kind].label}${mod.version ? ` v${mod.version}` : ''}）`, 'meta');
+      await applyOne(cfg, catalog, mod, { log });
+    }
+  } catch (e) {
+    // Leave the install as clean as it was, so a failed attempt never looks like a half-applied mod.
+    discardWorktree(dir);
+    for (const rel of gitStatus(dir).untracked) {
+      if (baseline.has(rel) || before.has(rel) || !isSafeRel(rel)) continue;
+      try { fs.rmSync(path.join(dir, rel), { force: true }); } catch { /* best effort */ }
+    }
+    throw e;
   }
 
   const after = gitStatus(dir).untracked.filter((p) => !baseline.has(p) && !before.has(p));
   const lock = {
     base: catalog.base || null,
+    baseCommit: catalog.baseCommit || null,
     appliedAt: nowIso(),
     repoUrl: catalog.repoUrl || null,
     mods: mods.map((m) => ({ id: m.id, name: m.name, kind: m.kind, version: m.version || null })),
@@ -456,5 +541,5 @@ export async function applyMods(cfg, ids, { log = () => {} } = {}) {
   };
   writeLock(lock);
   log(`✔ 已应用 ${mods.length} 个模组；安装目录现为「原版 + 模组」状态`, 'stdout');
-  return { ok: true, applied: lock.mods, added: after.length };
+  return { ok: true, applied: lock.mods, added: after.length, baseMismatch: !pre.ok };
 }

@@ -570,6 +570,11 @@ function renderMods() {
   if (!installed) hints.push('还没有部署游戏 —— 先在「主界面」点「一键部署」。');
   else if (!st.isRepo) hints.push('当前是压缩包解压的安装，无法应用补丁模组；删掉安装目录后用 git 方式重新「一键部署」即可。');
   else if (!st.hasGit) hints.push('未检测到 git 命令，无法应用补丁模组。');
+  if (m.preflight && m.preflight.baseCommit && !m.preflight.ok) {
+    const at = m.preflight.installRef ? `${m.preflight.installRef}（${String(m.preflight.installHead).slice(0, 8)}）` : String(m.preflight.installHead).slice(0, 8);
+    const want = m.preflight.baseRef ? `${m.preflight.baseRef}（${String(m.preflight.baseCommit).slice(0, 8)}）` : String(m.preflight.baseCommit).slice(0, 8);
+    hints.push(`⚠ 版本不一致：安装目录是 ${at}，模组目录针对 ${want}。补丁只保证在前者等于后者时可用（点「应用」时会再确认一次）。`);
+  }
   if (st.applied) hints.push('模组已应用：服务器（以及所有连进来的玩家）都会用到 modded 内容。更新游戏前请先「还原为原版」。');
   else if (selected) hints.push('勾选已记录，点「应用所选模组」才会写入安装目录；应用后需重启服务器生效。');
   $('#mods-hint').textContent = hints.join(' ');
@@ -930,10 +935,19 @@ function wire() {
     const ids = S.config.enabledMods || [];
     if (!ids.length) { toast('请先勾选要启用的模组', 'warn'); return; }
     const names = ids.map((id) => (S.mods.mods.find((m) => m.id === id) || {}).name || id);
+    const pre = S.mods.preflight || {};
+    let allowBaseMismatch = false;
+    if (pre.baseCommit && !pre.ok) {
+      const at = pre.installRef ? `${pre.installRef}（${String(pre.installHead).slice(0, 8)}）` : String(pre.installHead).slice(0, 8);
+      const want = pre.baseRef ? `${pre.baseRef}（${String(pre.baseCommit).slice(0, 8)}）` : String(pre.baseCommit).slice(0, 8);
+      const warn = `版本不一致：安装目录是 ${at}，模组目录针对 ${want}。\n\n补丁只保证在前者等于后者时可用，继续可能失败或产生错误结果。\n\n仍要尝试吗？`;
+      if (!confirm(warn)) return;
+      allowBaseMismatch = true;
+    }
     const warn = `将启用 ${ids.length} 个模组：\n\n· ${names.join('\n· ')}\n\n启动器会先把安装目录还原到干净的原版，再按顺序打上这些补丁。继续？`;
     if (!confirm(warn)) return;
     try {
-      const r = await api('/api/mods/apply', 'POST', { ids });
+      const r = await api('/api/mods/apply', 'POST', { ids, allowBaseMismatch });
       if (r.error) toast(r.error, 'warn', 7000);
       else { toast('开始应用模组，可在「终端」查看进度', 'ok'); setPage('terminal'); }
     } catch (e) { toast(`应用失败：${e.message}`, 'error', 7000); }

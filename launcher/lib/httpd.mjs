@@ -140,7 +140,7 @@ async function api(req, res, url, { getState, actions, logStore }) {
       return sendJson(res, 200, actions.modsSelect(body?.ids));
 
     case 'POST /api/mods/apply':
-      return sendJson(res, 200, await actions.modsApply(body?.ids));
+      return sendJson(res, 200, await actions.modsApply(body));
 
     case 'POST /api/mods/restore':
       return sendJson(res, 200, await actions.modsRestore());

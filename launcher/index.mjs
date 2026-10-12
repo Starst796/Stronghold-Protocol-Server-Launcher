@@ -363,14 +363,17 @@ const actions = {
     return { ok: true, config };
   },
 
-  modsApply(ids) {
+  modsApply(body) {
     if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
-    const list = Array.isArray(ids) && ids.length ? ids : (config.enabledMods || []);
-    if (!list.length) return { started: false, error: '请先勾选要启用的模组。' };
+    const ids = Array.isArray(body?.ids) && body.ids.length ? body.ids : (config.enabledMods || []);
+    if (!ids.length) return { started: false, error: '请先勾选要启用的模组。' };
     if (!exists(path.join(gameDir(config), 'package.json'))) return { started: false, error: '尚未部署游戏，请先「一键部署」。' };
-    config = patchConfig({ enabledMods: list });
-    const promise = taskRunner.run('mods', '应用模组', [
-      { label: `应用 ${list.length} 个模组`, run: (ctx) => applyMods(config, list, { log: (line, stream) => ctx.log(line, stream) }) },
+    // `allowBaseMismatch` comes from the UI after it warned the user that the install is not at the
+    // catalog's pinned base; without it the engine refuses (lib/mods.mjs checkBase).
+    const allowBaseMismatch = body?.allowBaseMismatch === true;
+    config = patchConfig({ enabledMods: ids });
+    const promise = taskRunner.run('mods', allowBaseMismatch ? '应用模组（忽略版本不一致）' : '应用模组', [
+      { label: `应用 ${ids.length} 个模组`, run: (ctx) => applyMods(config, ids, { log: (line, stream) => ctx.log(line, stream), allowBaseMismatch }) },
     ]);
     promise.then((r) => {
       refreshInstall();
