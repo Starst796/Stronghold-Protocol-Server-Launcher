@@ -21,7 +21,7 @@ import {
   syncAssets, assetManifestHeld, localArtState, localExtractArgs,
 } from './lib/repo.mjs';
 import {
-  modsState, modsStatus, fetchCatalog, applyMods, restoreGame, clearLock,
+  modsState, modsStatus, fetchCatalog, applyMods, restoreGame, clearLock, validateSelection,
 } from './lib/mods.mjs';
 import { checkUpdate, localHistory } from './lib/version.mjs';
 import {
@@ -371,6 +371,9 @@ const actions = {
     // `allowBaseMismatch` comes from the UI after it warned the user that the install is not at the
     // catalog's pinned base; without it the engine refuses (lib/mods.mjs checkBase).
     const allowBaseMismatch = body?.allowBaseMismatch === true;
+    // Refuse a bad combination before a task starts, so the UI can say why right away.
+    const valid = validateSelection(config, ids);
+    if (!valid.ok) return { started: false, error: valid.error };
     config = patchConfig({ enabledMods: ids });
     const promise = taskRunner.run('mods', allowBaseMismatch ? '应用模组（忽略版本不一致）' : '应用模组', [
       { label: `应用 ${ids.length} 个模组`, run: (ctx) => applyMods(config, ids, { log: (line, stream) => ctx.log(line, stream), allowBaseMismatch }) },

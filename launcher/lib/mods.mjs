@@ -326,8 +326,7 @@ export function modsState(cfg) {
 // ------------------------------------------------------------------------------------------------
 
 /** Resolve the requested ids against the catalog: order, base, requires/conflicts. */
-function selectMods(catalog, ids) {
-  const wanted = new Set((ids || []).map(String));
+function selectMods(catalog, ids) {  const wanted = new Set((ids || []).map(String));
   const byId = new Map((catalog.mods || []).map((m) => [m.id, m]));
   const chosen = [];
   for (const id of wanted) {
@@ -457,6 +456,23 @@ function installIdentity(dir) {
   const head = isGitRepo(dir) && gitCommand() ? (gitRun(dir, ['rev-parse', 'HEAD'], 15000).out || '').trim() : '';
   const ref = isGitRepo(dir) && gitCommand() ? (gitRun(dir, ['describe', '--tags', '--abbrev=0'], 15000).out || '').trim() : '';
   return { version: pkg?.version ?? null, head: head || null, ref: ref || null };
+}
+
+/**
+ * Check a selection against the catalog without touching the install, so the UI can refuse a bad
+ * combination up front (an unknown id, a `profile` entry, a missing dependency, a declared conflict)
+ * instead of surfacing it as a failed task.
+ * @param {object} cfg
+ * @param {string[]} ids
+ * @returns {{ok:true}|{ok:false, error:string}}
+ */
+export function validateSelection(cfg, ids) {
+  try {
+    selectMods(readCatalog(), ids);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
 }
 
 /**
