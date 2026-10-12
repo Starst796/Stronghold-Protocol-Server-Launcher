@@ -34,6 +34,7 @@ export const MODS_INDEX = 'index.json';
 
 const CACHE_DIR = path.join(ROOT, '.cache');
 const CATALOG_FILE = path.join(CACHE_DIR, 'mods-index.json');
+const SEEN_FILE = path.join(CACHE_DIR, 'mods-seen.json');
 const LOCK_FILE = path.join(CACHE_DIR, 'mods.lock.json');
 const DOWNLOAD_DIR = path.join(CACHE_DIR, 'mods');
 
@@ -76,7 +77,14 @@ export function isSafeRel(rel) {
  */
 export function normalizeCatalog(json) {
   const warnings = [];
-  const out = { version: Number(json?.version) || 1, base: str(json?.base, 40), mods: [], warnings };
+  const out = {
+    version: Number(json?.version) || 1,
+    catalogVersion: str(json?.catalogVersion, 40),
+    updatedAt: str(json?.updatedAt, 40),
+    base: str(json?.base, 40),
+    mods: [],
+    warnings,
+  };
   const seen = new Set();
   const list = Array.isArray(json?.mods) ? json.mods : [];
   if (!isObj(json)) warnings.push('目录不是 JSON 对象');
@@ -141,7 +149,10 @@ export function catalogBaseOf(cfg) {
 export function readCatalog() {
   const c = readJson(CATALOG_FILE, null);
   if (!c) {
-    return { version: 1, base: '', mods: [], warnings: [], repoUrl: null, branch: MODS_BRANCH, fetchedAt: null, via: null, error: null };
+    return {
+      version: 1, catalogVersion: '', updatedAt: '', base: '', mods: [], warnings: [],
+      repoUrl: null, branch: MODS_BRANCH, fetchedAt: null, via: null, error: null,
+    };
   }
   return {
     ...c,
@@ -167,13 +178,22 @@ export async function fetchCatalog(cfg, { log = () => {} } = {}) {
       const res = await fetchWithTimeout(url, { timeout: 15000, headers: { 'Cache-Control': 'no-cache' } });
       if (!res.ok) { lastErr = `HTTP ${res.status}`; continue; }
       const catalog = normalizeCatalog(await res.json());
+      // The relay repo versions its catalog (`catalogVersion` / `updatedAt`), so a refresh that moves
+      // it forward can be reported as an update instead of silently swapping the list.
+      const seen = readJson(SEEN_FILE, null);
+      const moved = !!(seen?.catalogVersion && catalog.catalogVersion && seen.catalogVersion !== catalog.catalogVersion);
       const cache = {
         ...catalog, fetchedAt: nowIso(), via: m.id, error: null, fetchBase: where.base,
         repoUrl: toHttpsUrl(cfg.modsRepoUrl) || String(cfg.modsRepoUrl), branch: MODS_BRANCH,
+        movedFrom: moved ? seen.catalogVersion : null,
       };
       writeJsonAtomic(CATALOG_FILE, cache);
+      writeJsonAtomic(SEEN_FILE, { catalogVersion: catalog.catalogVersion, updatedAt: catalog.updatedAt, seenAt: nowIso() });
       for (const w of catalog.warnings) log(`⚠ ${w}`, 'stderr');
-      log(`✔ 模组目录已更新：${catalog.mods.length} 个（基线 ${catalog.base || '未标注'}，来源 ${m.id}）`, 'stdout');
+      const ver = catalog.catalogVersion ? ` v${catalog.catalogVersion}` : '';
+      log(moved
+        ? `✔ 模组目录已更新：v${seen.catalogVersion} → ${catalog.catalogVersion}（${catalog.mods.length} 个模组，基线 ${catalog.base || '未标注'}）`
+        : `✔ 模组目录已就绪：${catalog.mods.length} 个（${ver || '未标注版本'}，基线 ${catalog.base || '未标注'}，来源 ${m.id}）`, 'stdout');
       return cache;
     } catch (e) {
       lastErr = String(e?.message || e);
@@ -281,6 +301,9 @@ export function modsState(cfg) {
     // Show where the launcher is *configured* to look (the cache may still hold a previous catalog).
     repoUrl: String(cfg?.modsRepoUrl || '').trim() || null,
     branch: MODS_BRANCH,
+    catalogVersion: catalog.catalogVersion || null,
+    updatedAt: catalog.updatedAt || null,
+    movedFrom: catalog.movedFrom || null,
     base: catalog.base || null,
     fetchedAt: catalog.fetchedAt || null,
     via: catalog.via || null,

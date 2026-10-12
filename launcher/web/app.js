@@ -268,6 +268,7 @@ function renderGitNotice() {
 function renderHome() {
   const { install, server, task, version, config, launcher } = S;
 
+  const local = install.local || {};
   const rows = [
     ['部署状态', install.exists ? (install.hasPackageJson ? '已下载' : '目录异常') : '未下载',
       install.exists && install.hasPackageJson ? 'ok' : (install.exists ? 'err' : 'warn')],
@@ -282,6 +283,11 @@ function renderHome() {
       : '未下载'),
       install.hasPackageJson ? (install.assets.present && install.assets.missing === 0 ? 'ok' : 'warn') : ''],
     ['占用空间', install.exists ? fmtBytes(install.sizeBytes) : '—', ''],
+    ['本地客户端素材', !install.hasPackageJson ? '—'
+      : (local.manifest
+        ? `已提取 ${local.count} 项${local.board3d ? '，3D 棋盘可用' : ''}`
+        : (S.config.extractLocal ? '未提取（有客户端时部署会自动提取）' : '未提取（已在配置里关闭）')),
+      local.manifest && local.board3d ? 'ok' : ''],
     ['运行状态', SERVER_LABEL[server.status] || server.status, ['running', 'external'].includes(server.status) ? 'ok' : (server.status === 'error' ? 'err' : '')],
     ['端口', String(config.port), ''],
     ['安装目录', install.dir, 'mono'],
@@ -297,6 +303,9 @@ function renderHome() {
   else if (install.assets.known && install.assets.missing > 0) hints.push('素材可能不完整，点「修复安装」或「只下素材」继续下载（会续传已完成的文件）。');
   if (install.hasPackageJson && !launcher.hasGit) hints.push('未检测到 git：仍可用压缩包方式部署，但启动器无法自动更新；安装 git 后即可开启自更新。');
   if (install.hasPackageJson && !launcher.hasNpm) hints.push('未检测到 npm：无法安装依赖，请先安装 Node.js（含 npm）。');
+  if (install.hasPackageJson && install.local && !install.local.manifest && S.config.extractLocal) {
+    hints.push('本地客户端素材未提取：装了《明日方舟》客户端的话，可在「配置 → 本地客户端素材」指定目录后点「重新提取」，即可启用官方 3D 棋盘与部分官方图标。');
+  }
   $('#deploy-hint').textContent = hints.join(' ');
 
   // Main / start-stop buttons
@@ -480,6 +489,8 @@ function fillConfigForm() {
   $('#cfg-auto-self').checked = !!c.autoUpdateSelf;
   $('#cfg-self-repo').value = c.selfRepoUrl || '';
   $('#cfg-mods-repo').value = c.modsRepoUrl || '';
+  $('#cfg-client-dir').value = c.clientDir || '';
+  $('#cfg-extract-local').checked = !!c.extractLocal;
   $('#cfg-open-browser').checked = !!c.openBrowser;
   $('#cfg-autostart').checked = !!c.autoStart;
   $('#cfg-install-dir').value = c.installDir;
@@ -529,6 +540,7 @@ function renderMods() {
 
   $('#mods-meta').innerHTML = [
     ['中转仓库', m.repoUrl || '未配置', 'mono'],
+    ['目录版本', m.catalogVersion ? `v${m.catalogVersion}${m.updatedAt ? `（${m.updatedAt}）` : ''}` : '—', ''],
     ['目录基线', m.base || '—', ''],
     ['可选模组', `${(m.mods || []).length} 个`, ''],
     ['最近拉取', m.fetchedAt ? new Date(m.fetchedAt).toLocaleString('zh-CN', { hour12: false }) : '尚未拉取', ''],
@@ -692,6 +704,8 @@ function readConfigForm() {
     autoUpdateSelf: $('#cfg-auto-self').checked,
     selfRepoUrl: $('#cfg-self-repo').value.trim(),
     modsRepoUrl: $('#cfg-mods-repo').value.trim(),
+    clientDir: $('#cfg-client-dir').value.trim(),
+    extractLocal: $('#cfg-extract-local').checked,
     openBrowser: $('#cfg-open-browser').checked,
     autoStart: $('#cfg-autostart').checked,
     installDir: $('#cfg-install-dir').value.trim(),
@@ -850,7 +864,7 @@ function wire() {
   });
   $('#btn-reset-config').addEventListener('click', async () => {
     if (!confirm('恢复为默认配置？')) return;
-    await saveConfig({ port: 3000, host: '0.0.0.0', combat: 'client', verify: 'off', trustProxy: 'auto', debug: false, openBrowser: true, autoStart: false, autoUpdateCheck: true, assetConcurrency: 16, installDir: '', activePreset: 'default' });
+    await saveConfig({ port: 3000, host: '0.0.0.0', combat: 'client', verify: 'off', trustProxy: 'auto', debug: false, openBrowser: true, autoStart: false, autoUpdateCheck: true, assetConcurrency: 16, installDir: '', activePreset: 'default', clientDir: '', extractLocal: true });
     fillConfigForm();
     toast('已恢复默认配置', 'ok');
   });

@@ -18,7 +18,7 @@ import {
 } from './lib/config.mjs';
 import {
   inspectInstall, installFromSource, updateFromSource, npmCommand, gitCommand, gameDir, parseChangelog, gitInfo,
-  syncAssets, assetManifestHeld,
+  syncAssets, assetManifestHeld, localArtState, localExtractArgs,
 } from './lib/repo.mjs';
 import {
   modsState, modsStatus, fetchCatalog, applyMods, restoreGame, clearLock,
@@ -155,6 +155,16 @@ function setupEnv() {
 }
 
 /**
+ * `tools/setup.mjs` arguments for the routine deploy / update paths: quiet, plus the client-art flags
+ * derived from the config (see repo.mjs `localExtractArgs` — the artwork lives in the install, so its
+ * presence decides between "report it" and "extract it").
+ */
+function setupArgs() {
+  const dir = gameDir(config);
+  return [path.join('tools', 'setup.mjs'), '--quiet', ...localExtractArgs(config, localArtState(dir).manifest)];
+}
+
+/**
  * Sync art / audio through the game's tool, which heals a stale upstream index and a blocked direct
  * GitHub connection by itself (repo.mjs `syncAssets`). `strict` is the explicit 「下载素材」action,
  * which must report a failure it cannot finish; without it (deploy / update flows) a remaining gap is
@@ -197,11 +207,21 @@ function deploySteps(action) {
       label: '下载 / 检出游戏源码',
       run: (ctx) => installFromSource(cfg, { log: (line, stream) => ctx.log(line, stream) }),
     });
-    steps.push(nodeStep('安装依赖、前端库并下载素材（可中断续传）', [path.join('tools', 'setup.mjs'), '--quiet'], dir, { env: setupEnv() }));
+    steps.push(nodeStep('安装依赖、前端库并下载素材（可中断续传）', setupArgs(), dir, { env: setupEnv() }));
     steps.push(assetHealStep(dir));
   } else if (action === 'repair') {
-    steps.push(nodeStep('检查并补全依赖与素材（可中断续传）', [path.join('tools', 'setup.mjs'), '--quiet'], dir, { env: setupEnv() }));
+    steps.push(nodeStep('检查并补全依赖与素材（可中断续传）', setupArgs(), dir, { env: setupEnv() }));
     steps.push(assetHealStep(dir));
+  } else if (action === 'local') {
+    // Re-extract the official client art (docs/DEPLOY.md §6): force it, so a stale extraction made by
+    // an older extract.py can be refreshed. `--game` when the user pinned the client path.
+    const args = ['--local', ...(cfg.clientDir ? ['--game', cfg.clientDir] : [])];
+    steps.push(nodeStep('从本地客户端提取官方素材', [path.join('tools', 'setup.mjs'), '--quiet', ...args], dir, { env: setupEnv() }));
+  } else if (action === 'client') {
+    // Detection only: setup.mjs prints which client it found (and whether it has the autochess
+    // resources) without writing anything. `--check` skips every other step's writes too.
+    const args = ['--check', ...(cfg.clientDir ? ['--game', cfg.clientDir] : [])];
+    steps.push(nodeStep('检测本机明日方舟客户端', [path.join('tools', 'setup.mjs'), ...args], dir, { env: setupEnv(), optional: true }));
   } else if (action === 'deps') {
     const npm = npmCommand();
     if (npm) steps.push({ label: '安装 Node 依赖（npm install）', cmd: npm, args: ['install', '--no-audit', '--no-fund'], cwd: dir });
@@ -224,7 +244,7 @@ async function runDeploy(action) {
     return { started: false, error: '尚未部署游戏，请先执行「一键部署」。' };
   }
   if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
-  const labels = { full: '一键部署', repair: '修复安装', deps: '安装依赖', assets: '下载素材', doctor: '环境诊断' };
+  const labels = { full: '一键部署', repair: '修复安装', deps: '安装依赖', assets: '下载素材', local: '提取本地客户端素材', client: '检测客户端', doctor: '环境诊断' };
   const promise = taskRunner.run(action === 'doctor' ? 'launcher' : 'deploy', labels[action] || action, deploySteps(action));
   promise.then((r) => {
     refreshInstall();
@@ -248,7 +268,7 @@ async function runUpdate(force) {
   const dir = gameDir(config);
   const steps = [
     { label: '获取最新版本', run: (ctx) => updateFromSource(config, { force, log: (line, stream) => ctx.log(line, stream) }) },
-    nodeStep('同步依赖与素材', [path.join('tools', 'setup.mjs'), '--quiet'], dir, { env: setupEnv() }),
+    nodeStep('同步依赖与素材', setupArgs(), dir, { env: setupEnv() }),
     assetHealStep(dir),
   ];
   const promise = taskRunner.run('update', force ? '强制更新' : '更新到最新版本', steps);

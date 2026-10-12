@@ -71,6 +71,7 @@ export function inspectInstall(cfg) {
     dir, exists: exists(dir), isRepo: false, hasPackageJson: false, packageVersion: null,
     hasNodeModules: false, missingPackages: [], hasVendor: false, missingVendor: [],
     assets: { present: false, total: 0, sampled: 0, missing: 0, known: false },
+    local: localArtState(dir),
     sizeBytes: 0, ready: false, hasGit: !!gitCommand(), hasTar: hasCommand('tar'),
   };
   if (!info.exists) return info;
@@ -365,6 +366,49 @@ export const ASSET_SHRINK_RE = /NOT written — it would lose \d+ entries/;
  */
 export function assetManifestHeld(dir) {
   return readJson(path.join(dir, '.cache', 'assets-report.json'), null)?.manifestWritten === false;
+}
+
+/**
+ * The optional official art extracted from a locally installed Arknights client (docs/DEPLOY.md §6):
+ * `data/local-assets.json` + `public/assets/local/`. Mirrors the game's own `checkLocal()`
+ * (tools/setup.mjs) so the launcher reports the same thing setup does. Absent art is not a failure —
+ * the game falls back to the 2D board and stand-in icons — so this only drives a status row and
+ * whether a deploy asks setup to extract.
+ * @param {string} dir game install directory
+ */
+export function localArtState(dir) {
+  const m = readJson(path.join(dir, 'data', 'local-assets.json'), null);
+  const groups = m?.groups && typeof m.groups === 'object' ? m.groups : null;
+  const count = groups ? Object.values(groups).reduce((n, g) => n + Object.keys(g || {}).length, 0) : 0;
+  const hasGroup = (prefix) => !!groups && Object.keys(groups).some((g) => g.startsWith(prefix));
+  const publicDir = path.join(dir, 'public', 'assets', 'local');
+  return {
+    manifest: !!m,
+    count,
+    dirPresent: exists(publicDir),
+    board3d: exists(path.join(publicDir, 'map', 'autochess', 'TX_autochessi_D.png')),
+    tiles: exists(path.join(publicDir, 'map', 'autochess', 'tiles.json')),
+    enemySpines: hasGroup('spine/enemy/'),
+    tokenSpines: hasGroup('spine/token/'),
+  };
+}
+
+/**
+ * The `tools/setup.mjs` flags that express the client-art settings (docs/DEPLOY.md §6). The game's
+ * step 6 has four modes, so the choice is a small state machine:
+ *   extractLocal off            → `--no-local`
+ *   art already extracted       → `--yes`   (report the count; `--local` would re-extract every time)
+ *   art missing, a path is set  → `--local --game <dir>`  (`--game` implies a forced extraction)
+ *   art missing, auto-detect    → `--local` (setup.mjs probes the usual install locations)
+ * @param {object} cfg launcher config (`extractLocal`, `clientDir`)
+ * @param {boolean} artPresent whether `data/local-assets.json` is already there
+ */
+export function localExtractArgs(cfg, artPresent) {
+  // `extractLocal` unset counts as on, matching DEFAULT_CONFIG (a caller that passes a bare object
+  // should get the same behaviour as the launcher's own defaults).
+  if (cfg?.extractLocal === false) return ['--no-local'];
+  if (artPresent) return ['--yes'];
+  return cfg?.clientDir ? ['--local', '--game', cfg.clientDir] : ['--local'];
 }
 
 /**

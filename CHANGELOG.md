@@ -2,24 +2,26 @@
 
 ## 1.1.9 — 2026-10-12
 
-新增「模组」页：把社区 fork 的客制化当作补丁应用到本地安装，可勾选、可一键还原。
+新增「模组」页（把社区 fork 的客制化当作补丁应用，可勾选、可一键还原）与「本地客户端素材」设置。
 
 ### 新增
 
+- **本地客户端素材（`docs/DEPLOY.md` 第 6 节）**：新增「客户端目录」与「部署 / 修复时自动提取」两项配置，以及 `检测客户端` / `重新提取素材` 两个动作。启动器据安装目录里有没有 `data/local-assets.json` 与配置状态，给上游 `tools/setup.mjs` 传对应的旗标（`launcher/lib/repo.mjs` 的 `localExtractArgs()`）：关闭提取 → `--no-local`；已提取 → `--yes`（只报告条目数，不重复提取）；未提取且指定了目录 → `--local --game <dir>`；未提取且未指定 → `--local`（交给 setup 自己探测）。主界面「部署状态」新增「本地客户端素材」一行（条目数、3D 棋盘是否可用）。
 - **模组管理（`launcher/lib/mods.mjs`）**：从**本项目自己的中转仓库**（默认 `Starst796/Stronghold-Protocol-Mods`，可在「配置 → 下载与更新」修改，也支持直接指向 `index.json` 的 URL）读取目录，把选中的模组按 `order` 应用到游戏的安装目录：先把跟踪文件还原到干净的上游版本（`git checkout -- .`），再按类型施加 `patch`（`git apply` 一整个 `git format-patch` 序列）或 `overlay`（复制清单文件）。完成后把 id、版本与**模组新增的文件列表**写入 `.cache/mods.lock.json`。
 - **「还原为原版」**：撤销跟踪文件的改动，并逐一删除锁文件里记录的模组新增文件（顺带清理变空的目录）；你自己添加的未跟踪文件不会被删。
 - **modded 标记**：启动服务器时带上 `SP_MODS=<ids>`（`launcher/lib/game.mjs`），顶部徽章与侧栏显示已启用的模组数量，供服务器与模组识别。
 - **界面**：新增「模组」导航页（卡片式勾选、目录元信息、当前安装状态）、顶部 modded 徽章、终端新增「模组」日志通道，以及 `POST /api/mods/{refresh,select,apply,restore}`（`launcher/lib/httpd.mjs`）。
+- **目录版本管理**：中转仓库的 `index.json` 用 `catalogVersion` / `updatedAt` 标记目录内容版本；启动器记录上次见到的版本，拉取到新版本时在终端提示 `模组目录已更新：v1.0.0 → v1.1.0`，「模组」页显示目录版本与最近拉取时间。中转仓库的 `tools/add-mod.mjs` 在改动目录时会自动提升该版本。
 
 ### 变更
 
 - **为什么需要中转仓库**：fork 的客制化改的是**游戏源码**，而上游的内容包（`docs/PACKS.md`）目前只加载 `lang`、`data` 类型仍在计划中，且明确**不加载第三方代码**；本项目也没有上游的合并权限。因此每个 fork 由中转仓库针对一个固定的上游版本打包一次，由启动器应用——代价是上游发新版后所有模组都要重打包（中转仓库 `tools/add-mod.mjs` 负责打包）。
 - **更新与模组互斥**：检测到已应用模组时，「更新到最新版本」会拒绝并提示先「还原为原版」（或勾选「强制更新」丢弃模组，此时会自动清除锁文件），避免 `git merge --ff-only` 因工作区改动而失败得莫名其妙。
 - **包类型**：`patch` / `overlay` 可应用；`profile`（整份 fork，例如莱茵扩展是自带启动器的独立发行版）只列示、不可应用。
-- `launcher/lib/config.mjs`：新增 `MODS_REPO_URL`、配置项 `modsRepoUrl` 与 `enabledMods`。
+- `launcher/lib/config.mjs`：新增 `MODS_REPO_URL`、配置项 `modsRepoUrl`、`enabledMods`、`clientDir`、`extractLocal`。
 - `launcher/lib/events.mjs`：新增日志通道 `mods`。
 - 需要安装目录是 git 检出且本机有 `git`；压缩包解压的安装会在页面上提示无法应用。
-- README 补「模组」章节与相关常见问题。
+- README 补「本地客户端素材」「模组」两节与相关常见问题。
 
 ## 1.1.8 — 2026-10-11
 

@@ -169,6 +169,8 @@ export const DEFAULT_CONFIG = {
   configVersion: 1,
   installDir: '',            // '' → DEFAULT_INSTALL_DIR
   downloadSource: 'github',
+  clientDir: '',             // AssetBundle root of a local Arknights client ('' → setup.mjs auto-detects)
+  extractLocal: true,        // let setup.mjs extract the official local-client art when a client is found
   port: 3000,
   host: '0.0.0.0',
   combat: 'client',          // client | server      → SP_COMBAT
@@ -203,6 +205,8 @@ const COERCE = {
   enabledMods: (v) => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).slice(0, 64) : []),
   assetConcurrency: (v) => Math.min(64, Math.max(1, Number(v) || 16)),
   installDir: (v) => String(v || ''),
+  clientDir: (v) => String(v || '').trim(),
+  extractLocal: (v) => v !== false,
   downloadSource: (v) => (SOURCES.some((s) => s.id === v) ? String(v) : 'github'),
   activePreset: (v) => String(v || 'default'),
 };
@@ -217,6 +221,7 @@ export function loadConfig() {
   }
   cfg.customPresets = (raw.customPresets && typeof raw.customPresets === 'object') ? raw.customPresets : {};
   if (cfg.installDir !== '' && !path.isAbsolute(cfg.installDir)) cfg.installDir = path.resolve(ROOT, cfg.installDir);
+  if (cfg.clientDir !== '' && !path.isAbsolute(cfg.clientDir)) cfg.clientDir = path.resolve(ROOT, cfg.clientDir);
   return cfg;
 }
 
@@ -234,6 +239,7 @@ export function patchConfig(patch) {
     next[k] = COERCE[k] ? COERCE[k](v) : v;
   }
   if (next.installDir && !path.isAbsolute(next.installDir)) next.installDir = path.resolve(ROOT, next.installDir);
+  if (next.clientDir && !path.isAbsolute(next.clientDir)) next.clientDir = path.resolve(ROOT, next.clientDir);
   return saveConfig(next);
 }
 

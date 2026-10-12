@@ -237,6 +237,26 @@
         </div>
 
         <div class="card">
+          <div class="card-head"><h2>本地客户端素材（可选）</h2></div>
+          <p class="fine">
+            从本机安装的《明日方舟》客户端里提取官方 3D 棋盘贴图、部分界面图标、灼热／炽焰源石虫模型和召唤物模型
+            （上游 <code>tools/local-extract</code>，见项目的 <code>docs/DEPLOY.md</code> 第 6 节）。没有它游戏照常运行，
+            只是 3D 棋盘退化成 2D、部分图标用替代样式。<b>只在本机使用</b>；提取需要 Python 3.8+（依赖约 40 MB，
+            装在安装目录内的 <code>.venv-extract</code>）。
+          </p>
+          <div class="form-grid">
+            <label class="field wide"><span>客户端目录（AssetBundle 根，例如 <code>…/Arknights_Data/StreamingAssets/AB/Windows</code>；留空则自动查找常见安装位置）</span>
+              <input type="text" id="cfg-client-dir" spellcheck="false" placeholder="留空 = 自动检测（Windows 原生安装 / CrossOver / Wine / PlayCover）">
+            </label>
+            <label class="field check-field"><span>部署 / 修复时自动提取</span><input type="checkbox" id="cfg-extract-local"></label>
+          </div>
+          <div class="admin-actions">
+            <button class="btn ghost sm" data-deploy="client">检测客户端</button>
+            <button class="btn ghost sm" data-deploy="local">重新提取素材</button>
+          </div>
+        </div>
+
+        <div class="card">
           <div class="card-head"><h2>启动器更新</h2></div>
           <div class="form-grid">
             <label class="field check-field"><span>启动时自动更新启动器</span><input type="checkbox" id="cfg-auto-self"></label>
