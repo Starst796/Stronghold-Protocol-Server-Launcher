@@ -238,11 +238,15 @@ const gitRun = (dir, args, timeout = 60000) => runCapture(gitCommand(), ['-C', d
 
 /**
  * `git status --porcelain` split by kind (untracked = files a mod added).
- * `-uall` matters: without it git collapses a wholly-untracked directory into one entry (`?? data/`),
- * and 「还原为原版」 would then try to delete a directory instead of the files the mod wrote.
+ * Two flags matter here:
+ *   - `-uall`: without it git collapses a wholly-untracked directory into one entry (`?? data/`), and
+ *     「还原为原版」 would then try to delete a directory instead of the files the mod wrote.
+ *   - `-c core.quotePath=false`: by default git escapes non-ASCII paths (`"\\345\\220\\257..."`), which
+ *     would be recorded in the lock file as literal backslash escapes and then skipped on restore —
+ *     so a mod whose new files have Chinese names would leave them behind.
  */
 function gitStatus(dir) {
-  const r = gitRun(dir, ['status', '--porcelain', '--untracked-files=all'], 30000);
+  const r = gitRun(dir, ['-c', 'core.quotePath=false', 'status', '--porcelain', '--untracked-files=all'], 30000);
   if (!r.ok) return { ok: false, untracked: [], changed: [] };
   const untracked = [];
   const changed = [];
