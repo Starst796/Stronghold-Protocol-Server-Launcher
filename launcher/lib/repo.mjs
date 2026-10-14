@@ -418,6 +418,18 @@ export function localExtractArgs(cfg, artPresent) {
 }
 
 /**
+ * Does this version track `data/assets.json` in git? Forks that add content commit their own manifest,
+ * and it lists entries the public mirrors do not have (their own art, or client-only models). Rebuilding
+ * the manifest from the mirrors can therefore never reproduce it — so the tool's shrink guard will keep
+ * refusing and retrying changes nothing.
+ */
+function ownsAssetManifest(dir) {
+  if (!isGitRepo(dir) || !gitCommand()) return false;
+  const r = runCapture(gitCommand(), ['-C', dir, 'ls-files', '--error-unmatch', 'data/assets.json'], { timeout: 15000 });
+  return r.ok && /assets\.json/.test(r.out);
+}
+
+/**
  * Sync the game's art / audio by running `tools/fetch-assets.mjs`, healing the two failures the tool
  * reports on an existing install:
  *   1. the manifest shrink guard — a stale `.cache/` upstream index that predates an operator the game
@@ -426,11 +438,15 @@ export function localExtractArgs(cfg, artPresent) {
  *   2. downloads that fail on a direct connection to GitHub — retried through the GitHub mirror
  *      (`--asset-source=mirror`), which is what the tool tells the user to do by hand.
  * A fresh index and plenty of bandwidth cost nothing extra: every step only runs after a failed one.
+ *
+ * The one case that must NOT be retried: a version whose manifest is its own (see `ownsAssetManifest`).
+ * There the guard is permanent — the missing entries are not on any mirror — and retrying only burns
+ * minutes (measured: three full passes over ~10k files, ~26 minutes, downloading nothing on the last).
  * @param {object} cfg launcher config (`installDir`, `assetConcurrency`, `downloadSource`)
  * @param {{log?:(line:string,stream?:string)=>void, trackChild?:(handle:any)=>void, isCancelled?:()=>boolean}} [o]
  *   `trackChild` hands the running child over so the task runner's cancel can still kill it;
  *   `isCancelled` suppresses the retries after the user cancelled.
- * @returns {Promise<{ok:boolean, code:number, refreshed:boolean, mirrored:boolean}>}
+ * @returns {Promise<{ok:boolean, code:number, refreshed:boolean, mirrored:boolean, ownedManifest:boolean}>}
  */
 export async function syncAssets(cfg, { log = () => {}, trackChild = () => {}, isCancelled = () => false } = {}) {
   const dir = gameDir(cfg);
@@ -459,9 +475,17 @@ export async function syncAssets(cfg, { log = () => {}, trackChild = () => {}, i
     }
   };
 
+  // Is this version's manifest its own? Decided before the first run, so a permanent guard is reported
+  // as such instead of being retried.
+  const ownedManifest = ownsAssetManifest(dir);
+
   let r = await attempt(route, []);
   let refreshed = false;
   if (r.code !== 0 && !isCancelled() && ASSET_SHRINK_RE.test(r.text)) {
+    if (ownedManifest) {
+      log('这个版本自带 data/assets.json（含公开镜像没有的条目），清单保护会一直触发；已保留它的清单，不再重试。', 'meta');
+      return { ok: false, code: r.code, refreshed: false, mirrored: false, ownedManifest: true };
+    }
     log('素材清单将缩小 —— 本地的上游索引可能已过期（游戏更新新增了干员 / 模型）。重新拉取索引后重试…', 'meta');
     refreshed = true;
     r = await attempt(route, ['--refresh-index']);
@@ -473,5 +497,5 @@ export async function syncAssets(cfg, { log = () => {}, trackChild = () => {}, i
     // --refresh-index again: the index download may have been what the blocked network stopped above.
     r = await attempt({ source: 'mirror' }, ['--refresh-index']);
   }
-  return { ok: r.code === 0, code: r.code, refreshed, mirrored };
+  return { ok: r.code === 0, code: r.code, refreshed, mirrored, ownedManifest };
 }

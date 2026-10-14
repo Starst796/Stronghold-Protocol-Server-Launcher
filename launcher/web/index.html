@@ -126,22 +126,6 @@
           </div>
         </div>
 
-        <div class="card">
-          <div class="card-head">
-            <h2>版本与更新</h2>
-            <div class="card-head-actions">
-              <button class="btn ghost sm" data-action="check-update">检查更新</button>
-              <button class="btn ghost sm" data-action="deep-check">检查并列出待更新提交</button>
-            </div>
-          </div>
-          <div class="version-row" id="version-row"></div>
-          <div class="incoming" id="incoming"></div>
-          <div class="update-actions">
-            <button class="btn primary" id="btn-update" hidden>立即更新</button>
-            <label class="check"><input type="checkbox" id="force-update"> 强制更新（丢弃本地修改）</label>
-          </div>
-        </div>
-
         <div class="card" id="card-self">
           <div class="card-head">
             <h2>启动器更新</h2>
@@ -301,10 +285,15 @@
           <div class="card-head">
             <h2>当前版本</h2>
             <div class="card-head-actions">
+              <button class="btn ghost sm" id="btn-versions-check">检查更新</button>
               <button class="btn ghost sm" id="btn-versions-relink">重建素材链接</button>
             </div>
           </div>
           <div class="status-grid" id="versions-active"></div>
+          <div class="update-actions">
+            <label class="check"><input type="checkbox" id="force-version-update"> 强制更新（丢弃该版本的本地改动）</label>
+            <label class="check"><input type="checkbox" id="resync-version-update"> 即使没有新提交也重新同步依赖与素材</label>
+          </div>
           <p class="hint" id="versions-hint"></p>
         </div>
 
@@ -333,6 +322,10 @@
           <p class="fine">
             每个版本是一份独立、完整的源码检出（不叠加补丁），可分别启动。素材（约 580 MB）只下载一份，
             各版本通过目录链接共用；删除版本不会删除共享素材。
+          </p>
+          <p class="fine">
+            fork 的克隆会先走上面选择的「下载源」，失败时自动依次尝试其它公共镜像，所以直连 github.com
+            不通的网络也能安装 fork。
           </p>
         </div>
 

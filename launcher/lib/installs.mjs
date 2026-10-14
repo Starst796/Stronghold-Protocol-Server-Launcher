@@ -21,7 +21,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { INSTALLS_DIR, sharedDirOf } from './config.mjs';
+import { INSTALLS_DIR, sharedDirOf, gitUrlCandidates } from './config.mjs';
 import { exists, readJson, mkdirp, runCapture, IS_WIN, dirSize } from './util.mjs';
 import { gitCommand, isGitRepo, gitInfo } from './repo.mjs';
 
@@ -232,6 +232,57 @@ export function unlinkInstallAssets(installDir) {
 
 const gitRun = (dir, args, timeout = 120000) => runCapture(gitCommand(), ['-C', dir, ...args], { timeout, env: { GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1' } });
 
+/**
+ * `git`'s message for a ref that does not exist on the remote. Telling these apart from a connection
+ * failure matters: every mirror reports the same thing, so "tried 5 addresses" would be a lie.
+ */
+const isMissingRefError = (out) => /Remote branch .* not found|Couldn't find remote ref|not our ref/i.test(String(out || ''));
+
+/**
+ * One clone/fetch attempt may not run longer than this. A blocked host does not fail fast — it idles on
+ * the OS connect timeout (75 s on macOS) — so the attempt has to be cut off by us.
+ */
+const GIT_ATTEMPT_TIMEOUT_MS = 90000;
+/** Total wall clock for one chain of attempts, so a dead network cannot keep a task busy for minutes. */
+const GIT_ATTEMPT_BUDGET_MS = 240000;
+/** Probes (`ls-remote`, the startup update check) are frequent and must stay cheap. */
+const GIT_PROBE_TIMEOUT_MS = 25000;
+const GIT_PROBE_BUDGET_MS = 60000;
+
+/** Abort a transfer that stalls once connected, on top of our own per-attempt timeout. */
+const GIT_ENV = {
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_LFS_SKIP_SMUDGE: '1',
+  GIT_HTTP_LOW_SPEED_LIMIT: '1000',
+  GIT_HTTP_LOW_SPEED_TIME: '30',
+};
+
+/**
+ * Run `attempt(url, timeoutMs)` against every candidate URL for `repo` until one succeeds. The
+ * candidates come from `gitUrlCandidates`, i.e. the configured download source's proxy first for a
+ * fork, so a mirrored user never waits on the unreachable direct URL.
+ * @param {object} cfg launcher config (`downloadSource`)
+ * @param {string} repo the version's recorded repository URL
+ * @param {(line:string, stream?:string)=>void} log
+ * @param {{timeoutMs:number, budgetMs:number, attempt:(url:string, timeoutMs:number)=>object}} o
+ * @returns {{ok:boolean, out:string, url:string, tried?:number}} `tried` is set on failure.
+ */
+function withUrlFallback(cfg, repo, log, o) {
+  const urls = gitUrlCandidates(cfg, repo);
+  const startedAt = Date.now();
+  let last = { ok: false, out: '', url: '' };
+  for (let i = 0; i < urls.length; i += 1) {
+    if (i > 0) log(`↻ 上一个地址没成功，改用：${urls[i]}`, 'meta');
+    last = { ...o.attempt(urls[i], o.timeoutMs), url: urls[i] };
+    if (last.ok) return last;
+    if (i + 1 < urls.length && Date.now() - startedAt > o.budgetMs) {
+      log('已超过尝试镜像的时间上限，停止重试。', 'meta');
+      break;
+    }
+  }
+  return { ...last, tried: urls.length };
+}
+
 /** What the UI needs to show for one version (cheap; called for every entry on each state push). */
 export function installStatus(cfg, entry) {
   const dir = entry.dir;
@@ -265,21 +316,29 @@ export function installStatus(cfg, entry) {
 export const listInstalls = (cfg) => (cfg.installs || []).map((e) => installStatus(cfg, e));
 
 /** Clone `<repo>` at `<ref>` into the version's folder. */
-export function cloneInstall(dir, repo, ref, { log = () => {} } = {}) {
+export function cloneInstall(dir, repo, ref, { cfg, log = () => {} } = {}) {
   if (!gitCommand()) throw new Error('需要 git 才能安装版本：请先安装 git。');
   if (dirExists(dir) && hasEntries(dir)) throw new Error(`目录已存在且非空：${dir}`);
   mkdirp(path.dirname(dir));
-  const args = ['clone', '--depth=1'];
-  if (ref) args.push('--branch', ref);
-  args.push('--single-branch', repo, dir);
-  log(`▶ git clone ${ref ? `（${ref}）` : ''}${repo}`, 'meta');
-  const r = runCapture(gitCommand(), ['-c', 'advice.detachedHead=false', ...args], {
-    timeout: 600000,
-    env: { GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1' },
+  const flags = ['-c', 'advice.detachedHead=false', 'clone', '--depth=1'];
+  if (ref) flags.push('--branch', ref);
+  flags.push('--single-branch');
+  const r = withUrlFallback(cfg, repo, log, {
+    timeoutMs: GIT_ATTEMPT_TIMEOUT_MS,
+    budgetMs: GIT_ATTEMPT_BUDGET_MS,
+    attempt: (url, timeoutMs) => {
+      log(`▶ git clone ${ref ? `（${ref}）` : ''}${url}`, 'meta');
+      // A killed attempt can leave a partial checkout that would block the next one.
+      try { if (dirExists(dir)) fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+      return runCapture(gitCommand(), [...flags, url, dir], { timeout: timeoutMs, env: GIT_ENV });
+    },
   });
   if (!r.ok) {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
-    throw new Error(`git clone 失败：${(r.out || '').split('\n').slice(0, 4).join(' ').slice(0, 300)}`);
+    const why = (r.out || '').split('\n').slice(0, 4).join(' ').slice(0, 300);
+    throw new Error(isMissingRefError(r.out)
+      ? `这个仓库里没有「分支或标签」${ref || 'master'}：请确认「分支或标签」填写正确。${why}`
+      : `git clone 失败（已尝试 ${r.tried || 1} 个地址，含当前下载源与公共镜像）：${why}`);
   }
   if (!exists(path.join(dir, 'package.json'))) throw new Error(`克隆完成，但目录里没有 package.json：${dir}`);
   return dir;
@@ -290,9 +349,20 @@ export function updateInstall(cfg, entry, { force = false, log = () => {} } = {}
   const dir = entry.dir;
   if (!entry.repo) throw new Error('这个版本没有记录来源仓库，无法更新（可用「重新安装」代替）。');
   const ref = entry.ref || 'master';
-  log(`▶ git fetch ${entry.repo} ${ref}`, 'meta');
-  const f = gitRun(dir, ['fetch', '--no-tags', entry.repo, ref], 300000);
-  if (!f.ok) throw new Error(`git fetch 失败：${(f.out || '').split('\n')[0]}`);
+  const f = withUrlFallback(cfg, entry.repo, log, {
+    timeoutMs: GIT_ATTEMPT_TIMEOUT_MS,
+    budgetMs: GIT_ATTEMPT_BUDGET_MS,
+    attempt: (url, timeoutMs) => {
+      log(`▶ git fetch ${url} ${ref}`, 'meta');
+      return runCapture(gitCommand(), ['-C', dir, 'fetch', '--no-tags', url, ref], { timeout: timeoutMs, env: GIT_ENV });
+    },
+  });
+  if (!f.ok) {
+    const why = (f.out || '').split('\n')[0];
+    throw new Error(isMissingRefError(f.out)
+      ? `这个仓库里没有「分支或标签」${ref}：请确认「分支或标签」填写正确。${why}`
+      : `git fetch 失败（已尝试 ${f.tried || 1} 个地址，含当前下载源与公共镜像）：${why}`);
+  }
   const next = gitRun(dir, ['rev-parse', 'FETCH_HEAD'], 30000).out.trim();
   const head = gitRun(dir, ['rev-parse', 'HEAD'], 30000).out.trim();
   if (next && head === next) { log('✔ 已是最新提交', 'stdout'); return { changed: false, commit: head }; }
@@ -306,6 +376,66 @@ export function updateInstall(cfg, entry, { force = false, log = () => {} } = {}
   const after = gitRun(dir, ['rev-parse', 'HEAD'], 30000).out.trim();
   log(`✔ 已更新到 ${after.slice(0, 8)}`, 'stdout');
   return { changed: true, commit: after };
+}
+
+/**
+ * Check one version against its own repository and ref — the replacement for the old "compare the
+ * install against the selected download source", which was wrong the moment versions could come from
+ * different forks.
+ *
+ * `git ls-remote` first (no fetch) to see whether the tip differs; only then does it fetch, which is what
+ * lets it say "behind" vs "diverged" and list the incoming commits.
+ * @param {object} entry a version from the registry
+ * @param {{log?:(line:string)=>void}} [o]
+ * @returns {{state:'equal'|'behind'|'diverged'|'unknown'|'norepo', local:string|null, remote:string|null, incoming:Array<{hash:string,subject:string,date:string}>}}
+ */
+export function checkInstallUpdate(entry, cfg, { log = () => {} } = {}) {
+  const out = { state: 'unknown', local: null, remote: null, incoming: [] };
+  if (!entry?.dir || !dirExists(entry.dir) || !isGitRepo(entry.dir)) return { ...out, state: 'unknown' };
+  if (!entry.repo) return { ...out, state: 'norepo' };
+  const git = gitCommand();
+  if (!git) return out;
+  const ref = entry.ref || 'master';
+  out.local = gitRun(entry.dir, ['rev-parse', 'HEAD'], 20000).out.trim() || null;
+
+  const ls = withUrlFallback(cfg, entry.repo, log, {
+    timeoutMs: GIT_PROBE_TIMEOUT_MS,
+    budgetMs: GIT_PROBE_BUDGET_MS,
+    attempt: (url, timeoutMs) => runCapture(git, ['ls-remote', url, `refs/heads/${ref}`, `refs/tags/${ref}`], { timeout: timeoutMs, env: { GIT_TERMINAL_PROMPT: '0' } }),
+  });
+  if (!ls.ok) { log(`ls-remote 失败：${(ls.out || '').split('\n')[0].slice(0, 160)}`); return out; }
+  const remote = (ls.out.split('\n').map((l) => l.trim()).filter(Boolean)[0] || '').split(/\s+/)[0] || null;
+  if (!remote) { log(`远端没有 ${ref} 这个分支或标签。`); return out; }
+  out.remote = remote;
+  if (remote === out.local) return { ...out, state: 'equal' };
+
+  // Different tips: fetch so we can tell "behind" from "diverged" and count the commits.
+  const f = withUrlFallback(cfg, entry.repo, log, {
+    timeoutMs: GIT_PROBE_TIMEOUT_MS,
+    budgetMs: GIT_PROBE_BUDGET_MS,
+    attempt: (url, timeoutMs) => runCapture(git, ['-C', entry.dir, 'fetch', '--no-tags', url, ref], { timeout: timeoutMs, env: GIT_ENV }),
+  });
+  if (!f.ok) { log(`fetch 失败：${(f.out || '').split('\n')[0].slice(0, 160)}`); return out; }
+  const fetched = gitRun(entry.dir, ['rev-parse', 'FETCH_HEAD'], 20000).out.trim();
+  if (!fetched) return out;
+  out.remote = fetched;
+  const behind = gitRun(entry.dir, ['rev-list', '--count', `HEAD..${fetched}`], 20000);
+  const ahead = gitRun(entry.dir, ['rev-list', '--count', `${fetched}..HEAD`], 20000);
+  const nBehind = behind.ok ? Number(behind.out.trim()) || 0 : 0;
+  const nAhead = ahead.ok ? Number(ahead.out.trim()) || 0 : 0;
+  if (nBehind === 0 && nAhead === 0) return { ...out, state: 'equal' };
+  if (nAhead > 0 && nBehind > 0) return { ...out, state: 'diverged' };
+  if (nAhead > 0) return { ...out, state: 'ahead' };
+  out.state = 'behind';
+  // The fetch already happened, so listing what is coming is essentially free.
+  const g = gitRun(entry.dir, ['log', '--pretty=format:%h\x1f%cs\x1f%s', `HEAD..${fetched}`], 30000);
+  if (g.ok) {
+    out.incoming = g.out.split('\n').filter(Boolean).slice(0, 40).map((l) => {
+      const [hash, date, subject] = l.split('\x1f');
+      return { hash, date, subject };
+    });
+  }
+  return out;
 }
 
 /** Delete a version's folder (never the shared store). */

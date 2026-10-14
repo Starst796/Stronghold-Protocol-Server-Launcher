@@ -19,14 +19,14 @@ import {
 } from './lib/config.mjs';
 import {
   listInstalls, sharedStatus, installIdFor, installDirFor, cloneInstall, updateInstall, deleteInstall,
-  linkInstallAssets, ensureShared, recordCommit, describeRepo, sharedPublicDir,
+  linkInstallAssets, ensureShared, recordCommit, describeRepo, sharedPublicDir, checkInstallUpdate,
 } from './lib/installs.mjs';
 import {
   inspectInstall, installFromSource, updateFromSource, npmCommand, gitCommand, gameDir, parseChangelog, gitInfo,
   syncAssets, assetManifestHeld, localArtState, localExtractArgs,
 } from './lib/repo.mjs';
 import {
-  modsStatus, fetchCatalog, applyMods, restoreGame, clearLock, validateSelection,
+  fetchCatalog, applyMods, restoreGame, validateSelection,
 } from './lib/mods.mjs';
 import { checkUpdate, localHistory } from './lib/version.mjs';
 import {
@@ -124,6 +124,9 @@ let versionInfo = {
   local: { version: installInfo.packageVersion, git: null }, remote: null, updateAvailable: false, incoming: [], error: null,
 };
 let checkingVersion = false;
+/** Per-version update checks, keyed by version id: { state, local, remote, incoming, checkedAt }. */
+let versionChecks = {};
+let checkingInstalls = false;
 
 /** Local snapshot of the launcher's own repo, so the UI can render before any network check. */
 function localSelfInfo() {
@@ -167,8 +170,9 @@ function buildState() {
     install: installInfo,
     server: game.state,
     task: taskRunner.state,
-    installs: listInstalls(config),
+    installs: listInstalls(config).map((v) => ({ ...v, check: versionChecks[v.id] || null })),
     activeInstallId: config.activeInstallId || null,
+    checkingInstalls,
     shared: sharingEnabled ? sharedStatus(config) : { ...sharedStatus(config), disabled: true },
     version: versionInfo,
     checkingVersion,
@@ -230,13 +234,26 @@ function setupArgs() {
  * which must report a failure it cannot finish; without it (deploy / update flows) a remaining gap is
  * only a warning — like the game's own tools/setup.mjs, the game still runs with placeholder art.
  */
-async function runAssetSync(ctx, { strict }) {
+/**
+ * Run one asset sync and report the outcome in terms a user can act on.
+ * @param {object} ctx task context (log / trackChild / isCancelled)
+ * @param {{strict:boolean, sync?:{done:boolean}}} o `sync` is the per-task marker that keeps the heal
+ *   step from repeating what the previous step already did.
+ */
+async function runAssetSync(ctx, { strict, sync = { done: false } }) {
+  sync.done = true;
   const r = await syncAssets(config, {
     log: (line, stream) => ctx.log(line, stream),
     trackChild: ctx.trackChild,
     isCancelled: ctx.isCancelled,
   });
   if (r.ok) return;
+  // A version that owns its manifest can never satisfy the shrink guard: say so once and stop. The game
+  // draws stand-ins for the few entries the mirrors lack, so this is not a broken install.
+  if (r.ownedManifest) {
+    ctx.log('素材已就绪；这个版本自带的清单里有几项公开镜像没有（它自己新增的内容），游戏会用替代样式显示这几项——这不是错误，无需重试。', 'meta');
+    return;
+  }
   const via = [r.refreshed && '已刷新上游索引', r.mirrored && '已改用 GitHub 镜像'].filter(Boolean).join('、');
   const tail = `${r.code}${via ? `，${via}` : ''}`;
   if (strict) throw new Error(`素材仍未下载完整（退出码 ${tail}），可稍后重试（支持续传）`);
@@ -248,12 +265,20 @@ async function runAssetSync(ctx, { strict }) {
  * guard (a `.cache/` upstream index older than the operators the update added, so the committed
  * data/assets.json was kept), sync again with refreshed indexes. A completed run does nothing here.
  */
-const assetHealStep = (dir) => ({
+/**
+ * The cleanup step after `tools/setup.mjs`: when its asset download was stopped by the manifest shrink
+ * guard, sync again. Runs at most once per task and never right after another sync — the earlier pass
+ * already applied the same remedies, and repeating it was measured as ten wasted minutes.
+ * @param {string} dir game install directory
+ * @param {{done:boolean}} [sync] per-task marker shared with the preceding sync step
+ */
+const assetHealStep = (dir, sync = { done: false }) => ({
   label: '补全美术 / 音频素材（必要时刷新上游索引）',
   run: async (ctx) => {
+    if (sync.done) { ctx.log('本次任务已同步过素材，跳过这一步。', 'meta'); return; }
     if (!assetManifestHeld(dir)) return;
     ctx.log('上次素材同步保留了仓库里的 data/assets.json（上游索引可能已过期），重新同步…', 'meta');
-    await runAssetSync(ctx, { strict: false });
+    await runAssetSync(ctx, { strict: false, sync });
   },
 });
 
@@ -281,7 +306,7 @@ function ensureSources(ctx) {
   if (exists(path.join(dir, 'package.json'))) {
     ctx.log(`目录已存在，跳过下载：${dir}`, 'meta');
   } else if (gitCommand() && entry.repo) {
-    cloneInstall(dir, entry.repo, entry.ref, { log: (line, stream) => ctx.log(line, stream) });
+    cloneInstall(dir, entry.repo, entry.ref, { cfg, log: (line, stream) => ctx.log(line, stream) });
   } else {
     // No git (or no recorded origin): the archive route downloads a tarball instead.
     ctx.log('未使用 git 或没有来源仓库，改用压缩包下载…', 'meta');
@@ -311,6 +336,8 @@ function deploySteps(action) {
   const cfg = config;
   const dir = gameDir(cfg);
   const steps = [];
+  // One marker per task: the setup step syncs assets, and the heal step must not immediately redo it.
+  const sync = { done: false };
 
   if (action === 'full') {
     steps.push({
@@ -318,12 +345,12 @@ function deploySteps(action) {
       run: (ctx) => ensureSources(ctx),
     });
     steps.push(linkStep());
-    steps.push(nodeStep('安装依赖、前端库并下载素材（可中断续传）', setupArgs(), dir, { env: setupEnv() }));
-    steps.push(assetHealStep(dir));
+    steps.push({ ...nodeStep('安装依赖、前端库并下载素材（可中断续传）', setupArgs(), dir, { env: setupEnv() }), onDone: () => { sync.done = true; } });
+    steps.push(assetHealStep(dir, sync));
   } else if (action === 'repair') {
     steps.push(linkStep());
-    steps.push(nodeStep('检查并补全依赖与素材（可中断续传）', setupArgs(), dir, { env: setupEnv() }));
-    steps.push(assetHealStep(dir));
+    steps.push({ ...nodeStep('检查并补全依赖与素材（可中断续传）', setupArgs(), dir, { env: setupEnv() }), onDone: () => { sync.done = true; } });
+    steps.push(assetHealStep(dir, sync));
   } else if (action === 'link') {
     steps.push(linkStep());
   } else if (action === 'local') {
@@ -343,7 +370,7 @@ function deploySteps(action) {
   } else if (action === 'assets') {
     steps.push({
       label: '下载美术 / 音频素材（约 250 MB，可续传）',
-      run: (ctx) => runAssetSync(ctx, { strict: true }),
+      run: (ctx) => runAssetSync(ctx, { strict: true, sync }),
     });
   } else if (action === 'doctor') {
     steps.push(nodeStep('运行环境诊断', [path.join('tools', 'doctor.mjs')], dir, { optional: true }));
@@ -368,31 +395,52 @@ async function runDeploy(action) {
   return { started: true };
 }
 
-async function runUpdate(force) {
+/**
+ * Update the active version from its own repository. This is the home page's 「更新到最新版本」.
+ *
+ * When the fetch produces no new commit there is nothing to rebuild, so the dependency and asset sync
+ * is skipped — that sync is the expensive part (it re-plans and re-checks ~11k files), and running it
+ * for an unchanged tree was measured as 26 wasted minutes. `resync` forces it anyway.
+ * @param {boolean} force discard the version's local changes (git reset --hard)
+ * @param {boolean} [resync] also run the dependency/asset sync when nothing changed
+ */
+async function runUpdate(force, resync = false) {
   if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
-  if (!exists(path.join(gameDir(config), 'package.json'))) return { started: false, error: '尚未部署游戏，请先执行「一键部署」。' };
-  // A modded install has a dirty working tree, so a fast-forward update cannot apply (and would
-  // silently discard the mods). Say so instead of letting git refuse with a cryptic message.
-  if (modsStatus(config).applied) {
-    return {
-      started: false,
-      error: '当前安装启用了模组：请先在「模组」页点「还原为原版」再更新（更新会覆盖模组改动），或勾选「强制更新」丢弃它们。',
-    };
+  const entry = activeInstall(config);
+  if (!entry || !exists(path.join(entry.dir, 'package.json'))) {
+    return { started: false, error: '还没有可更新的版本，请先在「版本」页安装一个。' };
   }
-  const dir = gameDir(config);
+  if (game.running && config.activeInstallId === entry.id) {
+    // The process holds the old code; updating underneath it would be a half-applied state.
+    return { started: false, error: '这个版本正在运行：请先「停止服务器」再更新。' };
+  }
+  const dir = entry.dir;
+  let changed = false;
+  const sync = { done: false };
   const steps = [
-    { label: '获取最新版本', run: (ctx) => updateFromSource(config, { force, log: (line, stream) => ctx.log(line, stream) }) },
-    nodeStep('同步依赖与素材', setupArgs(), dir, { env: setupEnv() }),
-    assetHealStep(dir),
+    {
+      label: force ? '获取最新版本（丢弃本地改动）' : '获取最新版本',
+      run: (ctx) => {
+        const r = updateInstall(config, entry, { force, log: (line, stream) => ctx.log(line, stream) });
+        changed = r.changed;
+        config = patchConfig({ installs: (config.installs || []).map((e) => (e.id === entry.id ? { ...e, commit: r.commit } : e)) });
+        if (!r.changed) ctx.log('提交没有变化；已跳过依赖与素材同步（需要时可勾选「即使没有新提交也重新同步依赖与素材」）。', 'meta');
+      },
+    },
+    {
+      ...nodeStep('同步依赖与素材', setupArgs(), dir, { env: setupEnv() }),
+      when: () => changed || resync,
+      onDone: () => { sync.done = true; },
+    },
+    { ...assetHealStep(dir, sync), when: () => changed || resync },
   ];
-  const promise = taskRunner.run('update', force ? '强制更新' : '更新到最新版本', steps);
+  const promise = taskRunner.run('update', force ? '强制更新' : '更新版本', steps);
   promise.then(async (r) => {
-    // A forced update resets the tree to the fetched master, so any mod is gone: drop the stale lock.
-    if (r.ok && force) clearLock();
     refreshInstall();
     if (r.ok) versionInfo = await checkUpdate(config, { deep: false });
     emitState();
-    toast(r.ok ? '更新完成' : '更新失败', r.ok ? 'ok' : 'error');
+    const label = changed ? '更新完成' : '已是最新（无需同步）';
+    toast(r.ok ? label : '更新失败，可在「终端」查看原因', r.ok ? 'ok' : 'error', r.ok && !changed ? 6000 : 8000);
   });
   return { started: true };
 }
@@ -517,6 +565,49 @@ const actions = {
 
   // ---------------------------------------------------------------- versions (lib/installs.mjs)
   /**
+   * Check every version against its own repository. `body.id` limits it to one.
+   * Replaces the old home-page check that compared the install with the selected download source —
+   * meaningless once versions can come from different forks.
+   */
+  async installsCheckAll(body = {}) {
+    if (checkingInstalls) return { checking: true };
+    const targets = body.id ? (config.installs || []).filter((e) => e.id === body.id) : (config.installs || []);
+    if (!targets.length) return { ok: false, error: '还没有版本可检查。' };
+    checkingInstalls = true;
+    emitState();
+    log({ channel: 'update', stream: 'meta', line: `▶ 检查 ${targets.length} 个版本的更新…` });
+    try {
+      for (const entry of targets) {
+        const r = checkInstallUpdate(entry, config, { log: (line) => log({ channel: 'update', stream: 'stdout', line }) });
+        versionChecks = { ...versionChecks, [entry.id]: { ...r, checkedAt: nowIso() } };
+        const text = {
+          equal: '已是最新', behind: `有 ${r.incoming.length || ''} 个新提交可更新`, ahead: '本地领先于远端',
+          diverged: '与远端分叉（需要强制更新）', norepo: '没有记录来源仓库', unknown: '无法检查',
+        }[r.state] || r.state;
+        log({
+          channel: 'update',
+          stream: r.state === 'equal' ? 'stdout' : 'meta',
+          line: `${r.state === 'equal' ? '✔' : '•'} ${entry.label}：${text}${r.local && r.remote ? `（${r.local.slice(0, 8)} → ${r.remote.slice(0, 8)}）` : ''}`,
+        });
+      }
+      for (const e of targets) {
+        const c = versionChecks[e.id];
+        if (c?.state !== 'behind' || !c.incoming.length) continue;
+        log({ channel: 'update', stream: 'stdout', line: `  ${e.label} 待更新提交（${c.incoming.length}）：` });
+        for (const commit of c.incoming.slice(0, 8)) {
+          log({ channel: 'update', stream: 'stdout', line: `    ${commit.hash} ${commit.date} ${commit.subject}` });
+        }
+        if (c.incoming.length > 8) log({ channel: 'update', stream: 'stdout', line: `    …另有 ${c.incoming.length - 8} 条` });
+      }
+    } finally {
+      checkingInstalls = false;
+      emitState();
+    }
+    return { ok: true, checks: versionChecks };
+  },
+
+
+  /**
    * Register a version and install it. `body = { repo, ref, label }` — a GitHub URL plus branch/tag;
    * empty `repo` means "upstream from the chosen download source".
    */
@@ -528,25 +619,37 @@ const actions = {
     if (!/^(https?:\/\/|git@|ssh:\/\/|file:\/\/)/.test(repo) && !path.isAbsolute(repo)) {
       return { started: false, error: '仓库地址需要是 https:// / git@ / ssh:// 地址，或本机上的绝对路径。' };
     }
-    const id = uniqueInstallId(config, installIdFor(repo, ref));
-    const entry = {
-      id,
-      label: String(body.label || '').trim().slice(0, 80) || `${repo.replace(/\.git$/, '').split('/').pop()}（${ref}）`,
-      kind: /sganggs\/Stronghold-Protocol/.test(repo) ? 'upstream' : 'fork',
-      repo, ref,
-      dir: installDirFor(id),
-      commit: '', linkMode: '', addedAt: nowIso(),
-    };
-    if (exists(path.join(entry.dir, 'package.json'))) return { started: false, error: `这个版本已经在列表里了（目录已存在）：${entry.dir}` };
-    config = patchConfig({ installs: [...(config.installs || []), entry], activeInstallId: id, installDir: entry.dir });
-    log({ channel: 'deploy', stream: 'meta', line: `▶ 新版本：${entry.label}（${repo} @ ${ref}）` });
+    const label = String(body.label || '').trim().slice(0, 80);
+    // A clone that failed earlier leaves the version registered but with no checkout (the folder is
+    // removed again). Retrying the same repo/ref has to reuse that entry: adding a new one would keep
+    // an orphan in the registry and put the retry under a `-2` id.
+    const orphan = (config.installs || []).find((e) => e.repo === repo && (e.ref || BRANCH) === ref && !exists(path.join(e.dir, 'package.json')));
+    let entry;
+    if (orphan) {
+      entry = { ...orphan, label: label || orphan.label };
+      config = patchConfig({ activeInstallId: entry.id, installDir: entry.dir });
+      log({ channel: 'deploy', stream: 'meta', line: `▶ 重试安装：${entry.label}（${repo} @ ${ref}）` });
+    } else {
+      const id = uniqueInstallId(config, installIdFor(repo, ref));
+      entry = {
+        id,
+        label: label || `${repo.replace(/\.git$/, '').split('/').pop()}（${ref}）`,
+        kind: /sganggs\/Stronghold-Protocol/.test(repo) ? 'upstream' : 'fork',
+        repo, ref,
+        dir: installDirFor(id),
+        commit: '', linkMode: '', addedAt: nowIso(),
+      };
+      if (exists(path.join(entry.dir, 'package.json'))) return { started: false, error: `这个版本已经在列表里了（目录已存在）：${entry.dir}` };
+      config = patchConfig({ installs: [...(config.installs || []), entry], activeInstallId: entry.id, installDir: entry.dir });
+      log({ channel: 'deploy', stream: 'meta', line: `▶ 新版本：${entry.label}（${repo} @ ${ref}）` });
+    }
     const promise = taskRunner.run('deploy', `安装版本：${entry.label}`, deploySteps('full'));
     promise.then((r) => {
       refreshInstall();
       emitState();
       toast(r.ok ? `版本「${entry.label}」已安装` : '安装失败，可在「终端」查看原因', r.ok ? 'ok' : 'error', 8000);
     });
-    return { started: true, id };
+    return { started: true, id: entry.id };
   },
 
   /** Adopt an existing folder on disk as a version (for a fork the user already cloned). */
@@ -612,20 +715,35 @@ const actions = {
     if (!entry) return { started: false, error: '找不到这个版本。' };
     if (game.running && config.activeInstallId === entry.id) return { started: false, error: '这个版本正在运行：请先「停止服务器」再更新。' };
     const force = body.force === true;
+    const resync = body.resync === true;
     const dir = entry.dir;
+    // Same no-op rule as the home path: an unchanged tree has nothing to rebuild, and the dependency /
+    // asset sync is the expensive part (it re-plans ~11k files).
+    let changed = false;
+    const sync = { done: false };
     const steps = [
-      { label: force ? '更新版本（丢弃该版本的本地改动）' : '更新版本', run: (ctx) => {
-        const r = updateInstall(config, entry, { force, log: (line, stream) => ctx.log(line, stream) });
-        config = patchConfig({ installs: (config.installs || []).map((e) => (e.id === entry.id ? { ...e, commit: r.commit } : e)) });
-      } },
-      nodeStep('同步依赖与素材', setupArgs(), dir, { env: setupEnv() }),
-      assetHealStep(dir),
+      {
+        label: force ? '更新版本（丢弃该版本的本地改动）' : '更新版本',
+        run: (ctx) => {
+          const r = updateInstall(config, entry, { force, log: (line, stream) => ctx.log(line, stream) });
+          changed = r.changed;
+          config = patchConfig({ installs: (config.installs || []).map((e) => (e.id === entry.id ? { ...e, commit: r.commit } : e)) });
+          if (!r.changed) ctx.log('提交没有变化；已跳过依赖与素材同步（需要时可勾选「即使没有新提交也重新同步」）。', 'meta');
+        },
+      },
+      {
+        ...nodeStep('同步依赖与素材', setupArgs(), dir, { env: setupEnv() }),
+        when: () => changed || resync,
+        onDone: () => { sync.done = true; },
+      },
+      { ...assetHealStep(dir, sync), when: () => changed || resync },
     ];
     const promise = taskRunner.run('update', `更新版本：${entry.label}`, steps);
     promise.then((r) => {
       refreshInstall();
+      if (r.ok) versionChecks = { ...versionChecks, [entry.id]: { ...checkInstallUpdate(entry, config, { log: () => {} }), checkedAt: nowIso() } };
       emitState();
-      toast(r.ok ? `版本「${entry.label}」已更新` : '更新失败，可在「终端」查看原因', r.ok ? 'ok' : 'error', 8000);
+      toast(r.ok ? (changed ? `版本「${entry.label}」已更新` : `版本「${entry.label}」已是最新（未重新同步）`) : '更新失败，可在「终端」查看原因', r.ok ? 'ok' : 'error', 8000);
     });
     return { started: true };
   },
@@ -650,7 +768,7 @@ const actions = {
   },
 
   deploy: runDeploy,
-  update: runUpdate,
+  update: (force, resync) => runUpdate(force, resync),
   cancelTask: () => taskRunner.cancel(),
 
   async checkVersion(deep = false) {
@@ -923,8 +1041,10 @@ async function main() {
     game.start().then(emitState);
   }
 
-  if (config.autoUpdateCheck && installInfo.hasPackageJson) {
-    setTimeout(() => { actions.checkVersion(false); }, 800);
+  // One check mechanism: each version against its own repository (the old "install vs download source"
+  // comparison is meaningless now that versions can come from different forks).
+  if (config.autoUpdateCheck && (config.installs || []).length) {
+    setTimeout(() => { actions.installsCheckAll(); }, 800);
   }
 
   process.on('SIGINT', () => { console.log('\n收到 Ctrl+C，正在退出…'); shutdown(0); });

@@ -124,6 +124,66 @@ export const sourceById = (id) => SOURCES.find((s) => s.id === id) || SOURCES[0]
 export const assetRouteOf = (cfg) => sourceById(cfg?.downloadSource).asset || { source: 'direct' };
 
 /**
+ * How each download source reaches an *arbitrary* GitHub repository. The `git` URLs above only cover
+ * the official repo, but a fork is cloned by the URL the user typed — on a network where github.com is
+ * unreachable that clone sits on the OS connect timeout (75 s on macOS) and then fails, so a user who
+ * picked a mirror still cannot install a fork. Applying the same proxy to the fork's URL fixes it.
+ *
+ * `prefix` is prepended to `https://github.com/…`; `dropScheme` marks gitclone.com, which wants
+ * `https://gitclone.com/github.com/…` instead of nesting a second scheme inside the path.
+ */
+const GITHUB_CLONE_MIRRORS = [
+  { id: 'ghproxy', prefix: 'https://gh-proxy.com/' },
+  { id: 'ghfast', prefix: 'https://ghfast.top/' },
+  { id: 'ghproxy-net', prefix: 'https://ghproxy.net/' },
+  { id: 'gitclone', prefix: 'https://gitclone.com/', dropScheme: true },
+];
+
+/** Anything that cannot be a remote we proxy: local paths, `file://`, Windows paths, relative refs. */
+const LOCAL_URL_RE = /^(file:\/\/|\/|[A-Za-z]:[\\/]|\.)/;
+
+/**
+ * Normalize a GitHub URL of any shape (plain https, already proxied, `git@`, `ssh://`) to
+ * `https://github.com/owner/repo.git`. Returns `''` for anything that is not a GitHub repository.
+ * @param {string} url
+ * @returns {string}
+ */
+export function githubHttpsUrl(url) {
+  const raw = String(url || '').trim().replace(/[?#].*$/, '').replace(/\/+$/, '');
+  if (!raw || LOCAL_URL_RE.test(raw)) return '';
+  const m = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/i.exec(raw);
+  return m ? `https://github.com/${m[1]}/${m[2]}.git` : '';
+}
+
+const mirrorGitUrl = (mirror, ghUrl) => mirror.prefix + (mirror.dropScheme ? ghUrl.replace(/^https:\/\//i, '') : ghUrl);
+
+/**
+ * The clone/fetch URLs to try for `repo`, best first. A user who selected a mirror is on a network
+ * where the direct URL does not work, so that route goes first and direct github.com is only a
+ * fallback; an `ssh` URL stays first because it may carry credentials a public proxy cannot.
+ * @param {object} cfg launcher config (`downloadSource`)
+ * @param {string} repo the version's recorded repository URL
+ * @returns {string[]} at least one URL (the original when it is not a GitHub repository)
+ */
+export function gitUrlCandidates(cfg, repo) {
+  const url = String(repo || '').trim();
+  const out = [];
+  const push = (u) => { if (u && !out.includes(u)) out.push(u); };
+  const gh = githubHttpsUrl(url);
+  if (!gh) return url ? [url] : [];
+  const isSsh = /^(git@|ssh:\/\/)/i.test(url);
+  const preferred = GITHUB_CLONE_MIRRORS.find((m) => m.id === cfg?.downloadSource);
+  if (preferred && !isSsh) push(mirrorGitUrl(preferred, gh));
+  // `https://github.com/o/r` and `…/r.git` name the same remote, so keeping both would only double
+  // the wait on a network where that host is blocked.
+  if (url !== gh.replace(/\.git$/, '')) push(url);
+  if (preferred && isSsh) push(mirrorGitUrl(preferred, gh));
+  push(gh);
+  for (const m of GITHUB_CLONE_MIRRORS) push(mirrorGitUrl(m, gh));
+  return out;
+}
+
+/**
  * Built-in launch presets. A preset only touches the runtime environment variables
  * the game server understands (see the project README "端口与配置").
  */

@@ -41,7 +41,7 @@ export class TaskRunner {
    * Run a task. Rejects when another task is already running.
    * @param {string} kind short id used as the log channel, e.g. 'deploy'
    * @param {string} label human label shown in the UI
-   * @param {Array<{label:string,cmd?:string,args?:string[],cwd?:string,env?:object,optional?:boolean,run?:(ctx:object)=>Promise<void>}>} steps
+   * @param {Array<{label:string,cmd?:string,args?:string[],cwd?:string,env?:object,optional?:boolean,when?:()=>boolean,onDone?:()=>void,run?:(ctx:object)=>Promise<void>}>} steps
    * @returns {Promise<{ok:boolean,code:number,cancelled:boolean}>}
    */
   async run(kind, label, steps) {
@@ -56,6 +56,12 @@ export class TaskRunner {
       const step = steps[i];
       if (this.cancelled) { code = 130; break; }
       this.#patch({ step: step.label, stepIndex: i + 1 });
+      // A step may declare `when()`: it is skipped (without failing the task) when that returns false.
+      // Used so "sync dependencies and assets" can be left out when the update turned out to be a no-op.
+      if (typeof step.when === 'function' && !step.when()) {
+        this.log({ channel: kind, stream: 'meta', line: `── [${i + 1}/${steps.length}] 跳过：${step.label}` });
+        continue;
+      }
       this.log({ channel: kind, stream: 'meta', line: `── [${i + 1}/${steps.length}] ${step.label}` });
       try {
         if (typeof step.run === 'function') {
@@ -66,6 +72,7 @@ export class TaskRunner {
             // can kill it too; the cmd path does the same with `this.current` below.
             trackChild: (handle) => { this.current = handle ?? null; },
           });
+          step.onDone?.();
         } else {
           const handle = runStream(step.cmd, step.args || [], {
             cwd: step.cwd,
@@ -76,6 +83,7 @@ export class TaskRunner {
           const res = await handle.done;
           this.current = null;
           if (res.error) throw res.error;
+          if (res.code === 0 && typeof step.onDone === 'function') step.onDone();
           if (res.code !== 0) {
             if (step.optional) {
               this.log({ channel: kind, stream: 'meta', line: `（可选步骤失败，已跳过：${step.label}）` });

@@ -113,7 +113,7 @@ async function api(req, res, url, { getState, actions, logStore }) {
       return sendJson(res, 200, { ok: actions.cancelTask() });
 
     case 'POST /api/update':
-      return sendJson(res, 200, await actions.update(body?.force === true));
+      return sendJson(res, 200, await actions.update(body?.force === true, body?.resync === true));
 
     case 'POST /api/version/check':
       return sendJson(res, 200, await actions.checkVersion(body?.deep === true));
@@ -135,6 +135,9 @@ async function api(req, res, url, { getState, actions, logStore }) {
 
     case 'POST /api/mods/refresh':
       return sendJson(res, 200, await actions.modsRefresh());
+
+    case 'POST /api/installs/check':
+      return sendJson(res, 200, await actions.installsCheckAll(body));
 
     case 'POST /api/installs/add':
       return sendJson(res, 200, actions.installsAdd(body));

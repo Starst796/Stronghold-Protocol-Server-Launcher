@@ -208,17 +208,23 @@ function renderShell() {
   const installed = S.install.hasPackageJson;
   $('#badge-version').textContent = installed ? `游戏 v${version.local?.version ?? S.install.packageVersion ?? '?'}` : '未部署';
 
+  // The update axis is per version now (each has its own repository), so the badge counts versions
+  // with new commits rather than comparing the install against one download source.
   const bu = $('#badge-update');
-  if (version.updateAvailable) {
+  const updatable = (S.installs || []).filter((v) => v.check?.state === 'behind');
+  const diverged = (S.installs || []).filter((v) => v.check?.state === 'diverged');
+  if (updatable.length || diverged.length) {
     bu.hidden = false;
     bu.className = 'badge badge-warn';
-    bu.textContent = `发现新版本 ${version.remote?.version ?? ''}`.trim();
-    bu.title = '点击查看更新内容';
-  } else if (version.checkedAt && installed) {
+    bu.textContent = updatable.length ? `${updatable.length} 个版本可更新` : `${diverged.length} 个版本已分叉`;
+    bu.title = '点击查看「版本」页';
+  } else if (S.checkingInstalls) {
     bu.hidden = false;
-    bu.className = 'badge badge-ok';
-    bu.textContent = '已是最新';
-  } else { bu.hidden = true; }
+    bu.className = 'badge';
+    bu.textContent = '检查更新中…';
+  } else {
+    bu.hidden = true;
+  }
 
   const navTask = $('#nav-task');
   navTask.hidden = task.status !== 'running';
@@ -332,28 +338,6 @@ function renderHome() {
   sel.value = config.downloadSource;
   $('#source-desc').textContent = (S.sources.find((s) => s.id === config.downloadSource) || {}).desc || '';
 
-  // Version card
-  const vr = $('#version-row');
-  const lv = version.local?.version ?? S.install.packageVersion;
-  const rv = version.remote?.version;
-  vr.innerHTML = [
-    ['本地版本', lv ? `v${lv}` : '未安装'],
-    ['远程最新', rv ? `v${rv}` : (version.error ? '获取失败' : '—')],
-    ['本地提交', version.local?.git?.short ? `${version.local.git.short}${version.local.git.dirty ? '（有本地修改）' : ''}` : '—'],
-    ['最近检查', version.checkedAt ? new Date(version.checkedAt).toLocaleString('zh-CN', { hour12: false }) : '尚未检查'],
-  ].map(([k, v]) => `<div class="status-item"><span class="k">${escapeHtml(k)}</span><span class="v mono">${escapeHtml(String(v))}</span></div>`).join('');
-
-  const inc = $('#incoming');
-  if (version.error) inc.innerHTML = `<p class="fine">检查失败：${escapeHtml(version.error)}（可切换下载源后重试）</p>`;
-  else if (version.updateAvailable && version.incoming?.length) {
-    inc.innerHTML = `<p class="fine">待更新的提交（${version.incoming.length}）：</p><ul>` +
-      version.incoming.slice(0, 30).map((c) => `<li><b>${escapeHtml(c.hash)}</b> ${escapeHtml(c.subject)} <span style="color:#6b7684">${escapeHtml(c.date || '')}</span></li>`).join('') + '</ul>';
-  } else if (version.updateAvailable) {
-    inc.innerHTML = '<p class="fine">有新版本可用，点「立即更新」会自动拉取代码并同步依赖与素材。</p>';
-  } else if (version.checkedAt && lv) inc.innerHTML = '<p class="fine">当前已是最新版本。</p>';
-  else inc.innerHTML = '';
-
-  $('#btn-update').hidden = !version.updateAvailable || task.status === 'running';
 
   // Share list
   const share = server.status === 'running' || server.status === 'external' ? S.network.share : [];
@@ -517,10 +501,17 @@ function versionCard(v, { active }) {
   const running = ['running', 'external'].includes(S.server.status);
   const isActive = active && S.activeInstallId === v.id;
   const linkLabel = { symlink: '共享素材（符号链接）', junction: '共享素材（目录联接）', copy: '共享素材（复制）', own: '素材未共享', skipped: '素材未共享（已关闭共享）' }[v.linkMode] || '';
+  const chk = v.check;
+  const CHECK_LABEL = {
+    equal: '已是最新', behind: `可更新（${chk?.incoming?.length || '?'} 个新提交）`, ahead: '本地领先远端',
+    diverged: '与远端分叉', norepo: '无来源仓库', unknown: '未检查',
+  };
+  const checkLabel = chk ? (CHECK_LABEL[chk.state] || chk.state) : null;
   const notes = [];
   if (v.repo) notes.push(v.repo.replace(/\.git$/, ''));
   if (v.ref) notes.push(`分支 ${v.ref}`);
   if (v.commit) notes.push(v.commit.slice(0, 8));
+  if (checkLabel) notes.push(checkLabel);
   if (v.sizeBytes) notes.push(fmtBytes(v.sizeBytes));
   if (linkLabel) notes.push(linkLabel);
   const warn = [];
@@ -531,7 +522,7 @@ function versionCard(v, { active }) {
   const cls = ['mod-card', isActive ? 'on' : '', v.exists ? '' : 'off'].filter(Boolean).join(' ');
   const actions = v.exists
     ? `<button class="btn ghost sm" data-ver-activate="${escapeHtml(v.id)}"${isActive || running || busy ? ' disabled' : ''}>${isActive ? '当前版本' : '设为当前'}</button>
-       <button class="btn ghost sm" data-ver-update="${escapeHtml(v.id)}"${running || busy ? ' disabled' : ''}>更新</button>
+       <button class="btn ${chk?.state === 'behind' || chk?.state === 'diverged' ? 'primary' : 'ghost'} sm" data-ver-update="${escapeHtml(v.id)}"${running || busy ? ' disabled' : ''}>${chk?.state === 'behind' ? '更新到最新' : '更新'}</button>
        <button class="btn ghost sm" data-ver-open="${escapeHtml(v.id)}">打开目录</button>
        <button class="btn ghost sm danger-ghost" data-ver-remove="${escapeHtml(v.id)}"${isActive && running ? ' disabled' : ''}>删除</button>`
     : `<button class="btn ghost sm" data-ver-update="${escapeHtml(v.id)}"${busy ? ' disabled' : ''}>重新安装</button>
@@ -579,6 +570,14 @@ function renderVersions() {
   ].map(([k, v, cls]) => `<div class="status-item"><span class="k">${escapeHtml(k)}</span><span class="v ${cls}">${escapeHtml(String(v))}</span></div>`).join('');
 
   const hints = [];
+  const updatable = list.filter((v) => v.check?.state === 'behind');
+  if (updatable.length) {
+    const first = updatable[0];
+    hints.push(`${updatable.length} 个版本有新提交：${updatable.map((v) => v.label).join('、')}`
+      + (first.check.incoming?.length ? `（${first.label} 的待更新提交：${first.check.incoming.slice(0, 5).map((c) => c.subject).join(' / ')}${first.check.incoming.length > 5 ? ' …' : ''}）` : ''));
+  }
+  const diverged = list.filter((v) => v.check?.state === 'diverged');
+  if (diverged.length) hints.push(`${diverged.length} 个版本与远端分叉（${diverged.map((v) => v.label).join('、')}）：更新前需勾选「强制更新」。`);
   if (S.config.shareAssets === false) hints.push('素材共享已关闭：每个版本都会各自下载一份约 580 MB 的素材。可在「配置 → 下载与更新」开启。');
   else if (active && !active.assetsLinked && active.assetsPresent) hints.push('当前版本的素材还没有接入共享区 —— 点「重建素材链接」即可（会把已有素材收纳进共享区，不会重新下载）。');
   if (S.server.status === 'running') hints.push('服务器正在运行：切换版本或更新前请先「停止服务器」。');
@@ -725,7 +724,8 @@ async function doDeploy(action) {
 }
 
 async function doUpdate() {
-  const force = $('#force-update').checked;
+  // The home page no longer has an update card; this path is kept for the (hidden) fallback only.
+  const force = $('#force-version-update')?.checked || false;
   try {
     const r = await api('/api/update', 'POST', { force });
     if (r.error) toast(r.error, 'warn');
@@ -804,8 +804,6 @@ function wire() {
     const action = t.dataset.action;
     if (action === 'open') { e.preventDefault(); doOpen(t.dataset.target); }
     else if (action === 'refresh') api('/api/refresh', 'POST').catch(() => {});
-    else if (action === 'check-update') api('/api/version/check', 'POST', { deep: false }).catch((err) => toast(err.message, 'error'));
-    else if (action === 'deep-check') { api('/api/version/check', 'POST', { deep: true }).catch((err) => toast(err.message, 'error')); setPage('terminal'); }
   });
 
   document.addEventListener('click', (e) => {
@@ -833,11 +831,7 @@ function wire() {
     try { await api('/api/self/restart', 'POST'); toast('正在重启启动器…', 'ok'); } catch (e) { toast(e.message, 'error'); }
   });
 
-  $('#badge-update').addEventListener('click', () => {
-    if (!S.version.updateAvailable) return;
-    const list = (S.version.remoteChangelog || []).map((c) => `v${c.version}${c.date ? ` — ${c.date}` : ''}\n${c.body}`).join('\n\n');
-    showModal(`可更新到 v${S.version.remote?.version ?? '?'}`, `<pre style="white-space:pre-wrap;font-family:inherit;margin:0">${escapeHtml(list || '（暂无更新说明）')}</pre>`);
-  });
+  $('#badge-update').addEventListener('click', () => setPage('versions'));
 
   $('#modal-close').addEventListener('click', () => { $('#modal').hidden = true; });
   $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('#modal').hidden = true; });
@@ -849,7 +843,6 @@ function wire() {
   $('#btn-start').addEventListener('click', () => doServer('/api/server/start'));
   $('#btn-stop').addEventListener('click', () => doServer('/api/server/stop'));
   $('#btn-restart').addEventListener('click', () => doServer('/api/server/restart'));
-  $('#btn-update').addEventListener('click', doUpdate);
   $('#btn-test-sources').addEventListener('click', testSources);
   $('#btn-cancel').addEventListener('click', () => api('/api/task/cancel', 'POST').catch(() => {}));
   $$('[data-deploy]').forEach((b) => b.addEventListener('click', () => doDeploy(b.dataset.deploy)));
@@ -907,9 +900,17 @@ function wire() {
         if (r.error) toast(r.error, 'warn', 7000);
       } else if (d.verUpdate) {
         const v = (S.installs || []).find((x) => x.id === d.verUpdate) || {};
-        const force = v.exists ? confirm(`更新「${v.label}」？\n\n若这个版本有本地改动或上游被改写过，需要改用「强制更新」。\n点「确定」= 快进合并（安全）；点「取消」= 不更新`) : false;
-        if (v.exists && !force) return;
-        const r = await api('/api/installs/update', 'POST', { id: d.verUpdate, force });
+        const force = $('#force-version-update').checked;
+        const resync = $('#resync-version-update').checked;
+        const inc = v.check?.incoming?.length || 0;
+        const what = v.check?.state === 'behind'
+          ? `将更新 ${inc} 个新提交`
+          : (v.check?.state === 'diverged' ? '本地与远端已分叉' : '看起来已是最新');
+        const warn = `更新「${v.label}」？\n\n${what}。\n`
+          + `${force ? '\n⚠ 已勾选「强制更新」：该版本的本地改动会被丢弃。' : '\n（未勾选强制更新，只做快进合并）'}`
+          + `${resync ? '\n已勾选「即使没有新提交也重新同步」。' : ''}`;
+        if (!confirm(warn)) return;
+        const r = await api('/api/installs/update', 'POST', { id: d.verUpdate, force, resync });
         if (r.error) toast(r.error, 'warn', 7000);
         else { toast('开始更新，可在「终端」查看进度', 'ok'); setPage('terminal'); }
       } else if (d.verRemove) {
@@ -933,7 +934,16 @@ function wire() {
     const ref = $('#add-ref').value.trim() || 'master';
     const label = $('#add-label').value.trim();
     if (!repo) { toast('请填写仓库地址（或用「添加上游版本」）', 'warn'); return; }
-    if (!confirm(`克隆并安装这个版本？\n\n仓库：${repo}\n分支：${ref}\n\n会下载完整源码（约 55 MB），并同步依赖；素材将复用共享区。`)) return;
+    // Warn when the shared store is empty but another version already holds the art: without adopting it
+    // first, this new version downloads its own ~580 MB (measured: a duplicate full download).
+    const sharedEmpty = !(S.shared?.populated);
+    const withAssets = (S.installs || []).filter((v) => v.assetsPresent && !v.assetsLinked);
+    const adoption = (S.config.shareAssets !== false && sharedEmpty && withAssets.length)
+      ? `\n\n⚠ 共享素材区还是空的，而「${withAssets[0].label}」里已有素材。\n`
+        + '建议先到「版本」页点「重建素材链接」把它收纳进共享区（移动，不重新下载），\n'
+        + '否则这个新版本会重新下载约 580 MB。'
+      : '';
+    if (!confirm(`克隆并安装这个版本？\n\n仓库：${repo}\n分支：${ref}\n\n会下载完整源码（约 55 MB），并同步依赖；素材将复用共享区。${adoption}`)) return;
     try {
       const r = await api('/api/installs/add', 'POST', { repo, ref, label });
       if (r.error) toast(r.error, 'warn', 7000);
@@ -958,6 +968,21 @@ function wire() {
       if (r.error) toast(r.error, 'warn', 7000);
       else { toast('已收纳为版本', 'ok'); $('#adopt-dir').value = ''; $('#adopt-label').value = ''; }
     } catch (e) { toast(e.message, 'error', 7000); }
+  });
+
+  $('#btn-versions-check').addEventListener('click', async () => {
+    const btn = $('#btn-versions-check');
+    btn.disabled = true;
+    btn.textContent = '检查中…';
+    try {
+      const r = await api('/api/installs/check', 'POST', {});
+      if (r.error) toast(r.error, 'warn', 7000);
+      else {
+        const behind = (S.installs || []).filter((v) => v.check?.state === 'behind').length;
+        toast(behind ? `有 ${behind} 个版本可以更新` : '所有版本都已是最新', 'ok', 6000);
+      }
+    } catch (e) { toast(e.message, 'error', 7000); }
+    finally { btn.disabled = false; btn.textContent = '检查更新'; }
   });
 
   $('#btn-versions-relink').addEventListener('click', async () => {
