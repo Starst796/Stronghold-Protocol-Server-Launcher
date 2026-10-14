@@ -136,6 +136,24 @@ async function api(req, res, url, { getState, actions, logStore }) {
     case 'POST /api/mods/refresh':
       return sendJson(res, 200, await actions.modsRefresh());
 
+    case 'POST /api/installs/add':
+      return sendJson(res, 200, actions.installsAdd(body));
+
+    case 'POST /api/installs/adopt':
+      return sendJson(res, 200, actions.installsAdopt(body));
+
+    case 'POST /api/installs/activate':
+      return sendJson(res, 200, actions.installsActivate(body));
+
+    case 'POST /api/installs/remove':
+      return sendJson(res, 200, actions.installsRemove(body));
+
+    case 'POST /api/installs/update':
+      return sendJson(res, 200, actions.installsUpdate(body));
+
+    case 'POST /api/installs/relink':
+      return sendJson(res, 200, actions.installsRelink());
+
     case 'POST /api/mods/select':
       return sendJson(res, 200, actions.modsSelect(body?.ids));
 
@@ -155,7 +173,7 @@ async function api(req, res, url, { getState, actions, logStore }) {
       return sendJson(res, 200, await actions.serverRestart());
 
     case 'POST /api/open':
-      return sendJson(res, 200, actions.open(body?.target || 'game'));
+      return sendJson(res, 200, actions.open(body?.target || 'game', body?.id));
 
     case 'POST /api/refresh':
       return sendJson(res, 200, await actions.refresh());

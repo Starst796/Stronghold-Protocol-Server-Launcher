@@ -150,7 +150,7 @@ function renderMarkdown(md) {
 }
 
 // ------------------------------------------------------------------ navigation
-const PAGE_TITLES = { home: '主界面', config: '配置', mods: '模组', terminal: '终端', about: '关于' };
+const PAGE_TITLES = { home: '主界面', config: '配置', versions: '版本', terminal: '终端', about: '关于' };
 let currentPage = 'home';
 
 function setPage(page) {
@@ -223,20 +223,21 @@ function renderShell() {
   const navTask = $('#nav-task');
   navTask.hidden = task.status !== 'running';
 
-  const navMods = $('#nav-mods');
-  if (navMods) {
-    const count = (S.config?.enabledMods || []).length;
-    navMods.hidden = count === 0;
-    navMods.textContent = String(count);
-  }
-  const badgeMods = $('#badge-mods');
-  if (badgeMods) {
-    const applied = S.mods?.status?.applied;
-    badgeMods.hidden = !applied;
-    if (applied) {
-      badgeMods.textContent = `模组 ${S.mods.status.mods.length}`;
-      badgeMods.title = `已应用：${S.mods.status.mods.map((m) => m.name).join('、')}`;
+  // Which version is selected, so the top bar always says what "启动" would run.
+  const activeVer = (S.installs || []).find((v) => v.id === S.activeInstallId) || null;
+  const badgeVer = $('#badge-version-label');
+  if (badgeVer) {
+    badgeVer.hidden = !activeVer;
+    if (activeVer) {
+      badgeVer.textContent = activeVer.label;
+      badgeVer.title = `${activeVer.dir}${activeVer.repo ? `\n${activeVer.repo} @ ${activeVer.ref}` : ''}`;
     }
+  }
+  const navVer = $('#nav-versions');
+  if (navVer) {
+    const n = (S.installs || []).length;
+    navVer.hidden = n < 1;
+    navVer.textContent = String(n);
   }
 }
 
@@ -488,7 +489,8 @@ function fillConfigForm() {
   $('#cfg-autocheck').checked = !!c.autoUpdateCheck;
   $('#cfg-auto-self').checked = !!c.autoUpdateSelf;
   $('#cfg-self-repo').value = c.selfRepoUrl || '';
-  $('#cfg-mods-repo').value = c.modsRepoUrl || '';
+  $('#cfg-share-assets').checked = c.shareAssets !== false;
+  $('#cfg-shared-dir').value = c.sharedAssetsDir || '';
   $('#cfg-client-dir').value = c.clientDir || '';
   $('#cfg-extract-local').checked = !!c.extractLocal;
   $('#cfg-open-browser').checked = !!c.openBrowser;
@@ -508,87 +510,83 @@ function renderConfig() {
   if (!configDirty) fillConfigForm();
 }
 
-// ------------------------------------------------------------------ render: mods
-/** One selectable mod card — the shape the mock UI uses: a checkbox, a title, a subtitle. */
-function modCard(mod, { compact = false } = {}) {
-  const kind = (S.mods?.kinds || {})[mod.kind] || { label: mod.kind, summary: '' };
+// ------------------------------------------------------------------ render: versions
+/** One version, as a card with the actions that make sense for its state. */
+function versionCard(v, { active }) {
+  const busy = S.task.status === 'running';
+  const running = ['running', 'external'].includes(S.server.status);
+  const isActive = active && S.activeInstallId === v.id;
+  const linkLabel = { symlink: '共享素材（符号链接）', junction: '共享素材（目录联接）', copy: '共享素材（复制）', own: '素材未共享', skipped: '素材未共享（已关闭共享）' }[v.linkMode] || '';
   const notes = [];
-  if (!mod.applicable) notes.push(kind.summary || '需单独安装');
-  if (mod.base && S.mods?.base && mod.base !== S.mods.base) notes.push(`基线 ${mod.base}（目录基线 ${S.mods.base}）`);
-  if (mod.requires?.length) notes.push(`依赖 ${mod.requires.join('、')}`);
-  if (mod.conflicts?.length) notes.push(`与 ${mod.conflicts.join('、')} 冲突`);
-  if (mod.sizeBytes) notes.push(fmtBytes(mod.sizeBytes));
-  if (mod.license) notes.push(mod.license);
-  const cls = ['mod-card', mod.enabled ? 'on' : '', mod.applicable ? '' : 'off'].filter(Boolean).join(' ');
-  return `<label class="${cls}" ${mod.applicable ? '' : 'title="整份 fork 不能作为补丁应用"'}>
-      <input type="checkbox" data-mod="${escapeHtml(mod.id)}"${mod.enabled ? ' checked' : ''}${mod.applicable ? '' : ' disabled'}>
+  if (v.repo) notes.push(v.repo.replace(/\.git$/, ''));
+  if (v.ref) notes.push(`分支 ${v.ref}`);
+  if (v.commit) notes.push(v.commit.slice(0, 8));
+  if (v.sizeBytes) notes.push(fmtBytes(v.sizeBytes));
+  if (linkLabel) notes.push(linkLabel);
+  const warn = [];
+  if (!v.exists) warn.push('目录不存在');
+  else if (!v.packageVersion) warn.push('缺少 package.json');
+  if (v.exists && !v.hasNodeModules) warn.push('依赖未安装');
+  if (v.exists && !v.assetsPresent) warn.push('素材未下载');
+  const cls = ['mod-card', isActive ? 'on' : '', v.exists ? '' : 'off'].filter(Boolean).join(' ');
+  const actions = v.exists
+    ? `<button class="btn ghost sm" data-ver-activate="${escapeHtml(v.id)}"${isActive || running || busy ? ' disabled' : ''}>${isActive ? '当前版本' : '设为当前'}</button>
+       <button class="btn ghost sm" data-ver-update="${escapeHtml(v.id)}"${running || busy ? ' disabled' : ''}>更新</button>
+       <button class="btn ghost sm" data-ver-open="${escapeHtml(v.id)}">打开目录</button>
+       <button class="btn ghost sm danger-ghost" data-ver-remove="${escapeHtml(v.id)}"${isActive && running ? ' disabled' : ''}>删除</button>`
+    : `<button class="btn ghost sm" data-ver-update="${escapeHtml(v.id)}"${busy ? ' disabled' : ''}>重新安装</button>
+       <button class="btn ghost sm danger-ghost" data-ver-remove="${escapeHtml(v.id)}"${busy ? ' disabled' : ''}>移除记录</button>`;
+  return `<div class="${cls}">
       <span class="mod-check" aria-hidden="true"></span>
       <span class="mod-text">
-        <b>${escapeHtml(mod.name)}<em class="mod-kind">${escapeHtml(kind.label)}</em></b>
-        ${mod.subtitle ? `<small>${escapeHtml(mod.subtitle)}</small>` : ''}
-        ${notes.length && !compact ? `<small class="mod-notes">${escapeHtml(notes.join(' · '))}</small>` : ''}
+        <b>${escapeHtml(v.label)}<em class="mod-kind">${v.kind === 'upstream' ? '原版' : 'fork'}</em>${isActive ? '<em class="mod-kind">当前</em>' : ''}</b>
+        ${notes.length ? `<small>${escapeHtml(notes.join(' · '))}</small>` : ''}
+        ${warn.length ? `<small class="mod-notes">${escapeHtml(warn.join('、'))}</small>` : ''}
+        <span class="ver-actions">${actions}</span>
       </span>
-    </label>`;
+    </div>`;
 }
 
-function renderMods() {
-  const m = S?.mods;
-  if (!m || !$('#mod-list')) return;
-  const st = m.status || {};
-  const installed = S.install.hasPackageJson;
+function renderVersions() {
+  if (!$('#version-list')) return;
+  const list = S.installs || [];
+  const active = list.find((v) => v.id === S.activeInstallId) || null;
   const busy = S.task.status === 'running';
 
-  $('#mods-meta').innerHTML = [
-    ['中转仓库', m.repoUrl || '未配置', 'mono'],
-    ['目录版本', m.catalogVersion ? `v${m.catalogVersion}${m.updatedAt ? `（${m.updatedAt}）` : ''}` : '—', ''],
-    ['目录基线', m.base || '—', ''],
-    ['可选模组', `${(m.mods || []).length} 个`, ''],
-    ['最近拉取', m.fetchedAt ? new Date(m.fetchedAt).toLocaleString('zh-CN', { hour12: false }) : '尚未拉取', ''],
-    ['安装类型', st.isRepo ? (st.hasGit ? 'git 检出（可应用模组）' : 'git 检出 · 缺少 git 命令') : '压缩包安装（不可应用）', st.canApply ? 'ok' : 'warn'],
-    ['当前状态', st.applied ? `已启用 ${st.mods.length} 个模组` : (st.dirty ? '工作区有未提交改动' : '原版'), st.applied || st.dirty ? 'warn' : 'ok'],
+  $('#versions-active').innerHTML = active
+    ? [
+      ['当前版本', active.label, ''],
+      ['来源', active.repo || '（本地目录）', 'mono'],
+      ['分支 / 提交', `${active.ref || '—'}${active.commit ? ` · ${active.commit.slice(0, 8)}` : ''}`, ''],
+      ['目录', active.dir, 'mono'],
+      ['依赖', active.hasNodeModules ? '已安装' : '未安装', active.hasNodeModules ? 'ok' : 'warn'],
+      ['素材', active.assetsLinked ? '已共享（链接）' : (active.assetsPresent ? '本版本自带' : '未下载'),
+        active.assetsLinked || active.assetsPresent ? 'ok' : 'warn'],
+      ['占用空间', fmtBytes(active.sizeBytes), ''],
+    ].map(([k, v, cls]) => `<div class="status-item"><span class="k">${escapeHtml(k)}</span><span class="v ${cls}">${escapeHtml(String(v))}</span></div>`).join('')
+    : '<p class="fine">还没有登记任何版本 —— 用下面的「添加上游版本」或「添加版本（任意 fork）」开始。</p>';
+
+  $('#version-list').innerHTML = list.length
+    ? list.map((v) => versionCard(v, { active: true })).join('')
+    : '<p class="fine">（空）</p>';
+
+  const sh = S.shared || {};
+  $('#shared-meta').innerHTML = [
+    ['素材共享', S.config.shareAssets === false ? '已关闭' : '已开启', S.config.shareAssets === false ? 'warn' : 'ok'],
+    ['共享目录', sh.publicDir || '—', 'mono'],
+    ['已收纳素材', sh.populated ? `${sh.files} 个顶层项 · ${fmtBytes(sh.bytes)}` : '（还没有素材）', sh.populated ? 'ok' : 'warn'],
+    ['链接方式', active?.linkMode ? ({ symlink: '符号链接', junction: '目录联接', copy: '复制', own: '未共享', skipped: '未共享' }[active.linkMode] || active.linkMode) : '—', ''],
   ].map(([k, v, cls]) => `<div class="status-item"><span class="k">${escapeHtml(k)}</span><span class="v ${cls}">${escapeHtml(String(v))}</span></div>`).join('');
 
-  const list = $('#mod-list');
-  if (!(m.mods || []).length) {
-    const err = m.error ? `上次拉取失败：${m.error}` : '中转仓库里还没有模组（可在仓库里按 README 的格式添加）。';
-    list.innerHTML = `<p class="fine">${escapeHtml(err)}</p>`;
-  } else {
-    list.innerHTML = m.mods.map((mod) => modCard(mod)).join('');
-  }
-  if ((m.warnings || []).length) {
-    list.insertAdjacentHTML('beforeend', `<p class="fine">${m.warnings.map((w) => escapeHtml(w)).join('<br>')}</p>`);
-  }
-
-  const selected = (S.config.enabledMods || []).length;
-  const apply = $('#btn-mods-apply');
-  apply.textContent = selected ? `应用所选模组（${selected}）` : '应用所选模组';
-  apply.disabled = busy || !selected || !st.canApply || !installed;
-  $('#btn-mods-restore').disabled = busy || !st.isRepo || !st.hasGit || !installed;
-  $('#btn-mods-none').disabled = busy || !selected;
-
   const hints = [];
-  if (!installed) hints.push('还没有部署游戏 —— 先在「主界面」点「一键部署」。');
-  else if (!st.isRepo) hints.push('当前是压缩包解压的安装，无法应用补丁模组；删掉安装目录后用 git 方式重新「一键部署」即可。');
-  else if (!st.hasGit) hints.push('未检测到 git 命令，无法应用补丁模组。');
-  if (m.preflight && m.preflight.baseCommit && !m.preflight.ok) {
-    const at = m.preflight.installRef ? `${m.preflight.installRef}（${String(m.preflight.installHead).slice(0, 8)}）` : String(m.preflight.installHead).slice(0, 8);
-    const want = m.preflight.baseRef ? `${m.preflight.baseRef}（${String(m.preflight.baseCommit).slice(0, 8)}）` : String(m.preflight.baseCommit).slice(0, 8);
-    hints.push(`⚠ 版本不一致：安装目录是 ${at}，模组目录针对 ${want}。补丁只保证在前者等于后者时可用（点「应用」时会再确认一次）。`);
-  }
-  if (st.applied) hints.push('模组已应用：服务器（以及所有连进来的玩家）都会用到 modded 内容。更新游戏前请先「还原为原版」。');
-  else if (selected) hints.push('勾选已记录，点「应用所选模组」才会写入安装目录；应用后需重启服务器生效。');
-  $('#mods-hint').textContent = hints.join(' ');
+  if (S.config.shareAssets === false) hints.push('素材共享已关闭：每个版本都会各自下载一份约 580 MB 的素材。可在「配置 → 下载与更新」开启。');
+  else if (active && !active.assetsLinked && active.assetsPresent) hints.push('当前版本的素材还没有接入共享区 —— 点「重建素材链接」即可（会把已有素材收纳进共享区，不会重新下载）。');
+  if (S.server.status === 'running') hints.push('服务器正在运行：切换版本或更新前请先「停止服务器」。');
+  const needsSetup = list.filter((v) => !v.exists || !v.packageVersion || !v.hasNodeModules);
+  if (needsSetup.length) hints.push(`${needsSetup.length} 个版本未就绪（缺目录 / 依赖 / 素材），可在其卡片上点「更新」补全。`);
+  $('#versions-hint').textContent = hints.join(' ');
 
-  const applied = $('#mods-applied');
-  if (st.applied) {
-    const rows = st.mods.map((mod) => ({
-      id: mod.id, name: mod.name, kind: mod.kind, subtitle: `v${mod.version || '?'}`, enabled: true, applicable: true,
-    }));
-    applied.innerHTML = rows.map((r) => modCard(r, { compact: true })).join('')
-      + `<p class="fine">应用时间：${st.appliedAt ? new Date(st.appliedAt).toLocaleString('zh-CN', { hour12: false }) : '—'}${st.added ? ` · 新增 ${st.added} 个文件` : ''}</p>`;
-  } else {
-    applied.innerHTML = '<p class="fine">当前是原版安装，没有启用任何模组。</p>';
-  }
+  $('#btn-versions-relink').disabled = busy || S.config.shareAssets === false || S.server.status === 'running';
 }
 
 // ------------------------------------------------------------------ render: about
@@ -679,7 +677,7 @@ function render() {
   renderHome();
   renderSelf();
   renderConfig();
-  renderMods();
+  renderVersions();
   renderAbout();
   renderTaskProgress();
 }
@@ -708,7 +706,8 @@ function readConfigForm() {
     autoUpdateCheck: $('#cfg-autocheck').checked,
     autoUpdateSelf: $('#cfg-auto-self').checked,
     selfRepoUrl: $('#cfg-self-repo').value.trim(),
-    modsRepoUrl: $('#cfg-mods-repo').value.trim(),
+    shareAssets: $('#cfg-share-assets').checked,
+    sharedAssetsDir: $('#cfg-shared-dir').value.trim(),
     clientDir: $('#cfg-client-dir').value.trim(),
     extractLocal: $('#cfg-extract-local').checked,
     openBrowser: $('#cfg-open-browser').checked,
@@ -897,70 +896,79 @@ function wire() {
     toast(`已保存预设「${name}」`, 'ok');
   });
 
-  // ---- mods page
-  $('#btn-mods-refresh').addEventListener('click', async () => {
-    const btn = $('#btn-mods-refresh');
-    btn.disabled = true;
-    btn.textContent = '拉取中…';
+  // ---- versions page
+  $('#version-list').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    const d = btn.dataset;
     try {
-      const r = await api('/api/mods/refresh', 'POST');
+      if (d.verActivate) {
+        const r = await api('/api/installs/activate', 'POST', { id: d.verActivate });
+        if (r.error) toast(r.error, 'warn', 7000);
+      } else if (d.verUpdate) {
+        const v = (S.installs || []).find((x) => x.id === d.verUpdate) || {};
+        const force = v.exists ? confirm(`更新「${v.label}」？\n\n若这个版本有本地改动或上游被改写过，需要改用「强制更新」。\n点「确定」= 快进合并（安全）；点「取消」= 不更新`) : false;
+        if (v.exists && !force) return;
+        const r = await api('/api/installs/update', 'POST', { id: d.verUpdate, force });
+        if (r.error) toast(r.error, 'warn', 7000);
+        else { toast('开始更新，可在「终端」查看进度', 'ok'); setPage('terminal'); }
+      } else if (d.verRemove) {
+        const v = (S.installs || []).find((x) => x.id === d.verRemove) || {};
+        const warn = v.exists
+          ? `删除版本「${v.label}」？\n\n会删除目录：\n${v.dir}\n\n共享素材不受影响。`
+          : `移除记录「${v.label}」？（目录本来就不存在）`;
+        if (!confirm(warn)) return;
+        const r = await api('/api/installs/remove', 'POST', { id: d.verRemove });
+        if (r.error) toast(r.error, 'warn', 7000);
+        else { toast('已删除', 'ok'); setPage('terminal'); }
+      } else if (d.verOpen) {
+        const r = await api('/api/open', 'POST', { target: 'install', id: d.verOpen });
+        if (r && r.ok === false) toast(r.error || '打开失败', 'warn', 6000);
+      }
+    } catch (err) { toast(err.message, 'error', 7000); }
+  });
+
+  $('#btn-add-version').addEventListener('click', async () => {
+    const repo = $('#add-repo').value.trim();
+    const ref = $('#add-ref').value.trim() || 'master';
+    const label = $('#add-label').value.trim();
+    if (!repo) { toast('请填写仓库地址（或用「添加上游版本」）', 'warn'); return; }
+    if (!confirm(`克隆并安装这个版本？\n\n仓库：${repo}\n分支：${ref}\n\n会下载完整源码（约 55 MB），并同步依赖；素材将复用共享区。`)) return;
+    try {
+      const r = await api('/api/installs/add', 'POST', { repo, ref, label });
       if (r.error) toast(r.error, 'warn', 7000);
-      else toast(`模组目录已更新：${r.count} 个${r.base ? `（基线 ${r.base}）` : ''}`, 'ok');
-    } catch (e) {
-      toast(`拉取失败：${e.message}`, 'error', 7000);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = '刷新目录';
-    }
+      else { toast('开始克隆，可在「终端」查看进度', 'ok'); setPage('terminal'); }
+    } catch (e) { toast(e.message, 'error', 7000); }
   });
 
-  $('#mod-list').addEventListener('change', async (e) => {
-    const cb = e.target.closest('input[data-mod]');
-    if (!cb) return;
-    const ids = $$('#mod-list input[data-mod]').filter((i) => i.checked).map((i) => i.dataset.mod);
+  $('#btn-add-upstream').addEventListener('click', async () => {
     try {
-      const r = await api('/api/mods/select', 'POST', { ids });
-      S.config.enabledMods = r.config.enabledMods;
-    } catch (err) { toast(err.message, 'error'); }
-  });
-
-  $('#btn-mods-none').addEventListener('click', async () => {
-    try {
-      const r = await api('/api/mods/select', 'POST', { ids: [] });
-      S.config.enabledMods = r.config.enabledMods;
-    } catch (err) { toast(err.message, 'error'); }
-  });
-
-  $('#btn-mods-apply').addEventListener('click', async () => {
-    const ids = S.config.enabledMods || [];
-    if (!ids.length) { toast('请先勾选要启用的模组', 'warn'); return; }
-    const names = ids.map((id) => (S.mods.mods.find((m) => m.id === id) || {}).name || id);
-    const pre = S.mods.preflight || {};
-    let allowBaseMismatch = false;
-    if (pre.baseCommit && !pre.ok) {
-      const at = pre.installRef ? `${pre.installRef}（${String(pre.installHead).slice(0, 8)}）` : String(pre.installHead).slice(0, 8);
-      const want = pre.baseRef ? `${pre.baseRef}（${String(pre.baseCommit).slice(0, 8)}）` : String(pre.baseCommit).slice(0, 8);
-      const warn = `版本不一致：安装目录是 ${at}，模组目录针对 ${want}。\n\n补丁只保证在前者等于后者时可用，继续可能失败或产生错误结果。\n\n仍要尝试吗？`;
-      if (!confirm(warn)) return;
-      allowBaseMismatch = true;
-    }
-    const warn = `将启用 ${ids.length} 个模组：\n\n· ${names.join('\n· ')}\n\n启动器会先把安装目录还原到干净的原版，再按顺序打上这些补丁。继续？`;
-    if (!confirm(warn)) return;
-    try {
-      const r = await api('/api/mods/apply', 'POST', { ids, allowBaseMismatch });
+      const r = await api('/api/installs/add', 'POST', {});
       if (r.error) toast(r.error, 'warn', 7000);
-      else { toast('开始应用模组，可在「终端」查看进度', 'ok'); setPage('terminal'); }
-    } catch (e) { toast(`应用失败：${e.message}`, 'error', 7000); }
+      else { toast('开始安装上游版本，可在「终端」查看进度', 'ok'); setPage('terminal'); }
+    } catch (e) { toast(e.message, 'error', 7000); }
   });
 
-  $('#btn-mods-restore').addEventListener('click', async () => {
-    if (!confirm('还原为原版：清除安装目录里所有已应用的模组改动（你的存档与配置不受影响）。继续？')) return;
+  $('#btn-adopt-version').addEventListener('click', async () => {
+    const dir = $('#adopt-dir').value.trim();
+    const label = $('#adopt-label').value.trim();
+    if (!dir) { toast('请填写目录绝对路径', 'warn'); return; }
     try {
-      const r = await api('/api/mods/restore', 'POST');
+      const r = await api('/api/installs/adopt', 'POST', { dir, label });
       if (r.error) toast(r.error, 'warn', 7000);
-      else { toast('正在还原为原版，可在「终端」查看进度', 'ok'); setPage('terminal'); }
-    } catch (e) { toast(`还原失败：${e.message}`, 'error', 7000); }
+      else { toast('已收纳为版本', 'ok'); $('#adopt-dir').value = ''; $('#adopt-label').value = ''; }
+    } catch (e) { toast(e.message, 'error', 7000); }
   });
+
+  $('#btn-versions-relink').addEventListener('click', async () => {
+    if (!confirm('重建所有版本的素材链接？\n\n会把各版本已有的素材收纳进共享区（不重新下载），再建立链接。')) return;
+    try {
+      const r = await api('/api/installs/relink', 'POST', {});
+      if (r.error) toast(r.error, 'warn', 7000);
+      else toast(`已重建 ${r.count} 个版本的素材链接`, 'ok', 6000);
+    } catch (e) { toast(e.message, 'error', 7000); }
+  });
+
 
   // ---- terminal page
   $('#term-filters').addEventListener('click', (e) => {

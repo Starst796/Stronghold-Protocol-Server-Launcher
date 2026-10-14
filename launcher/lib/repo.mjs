@@ -102,6 +102,9 @@ export function gitInfo(dir) {
   const describe = run(['describe', '--tags', '--abbrev=0']);
   const branch = run(['rev-parse', '--abbrev-ref', 'HEAD']);
   const status = run(['status', '--porcelain']);
+  // `runCapture` folds stderr into `out`, so a repository without an `origin` would otherwise report
+  // the error text ("error: No such remote 'origin'") as its remote URL.
+  const remote = run(['remote', 'get-url', 'origin']);
   return {
     commit: head.ok ? head.out.trim() : null,
     short: short.ok ? short.out.trim() : null,
@@ -110,7 +113,7 @@ export function gitInfo(dir) {
     tag: describe.ok ? describe.out.trim() : null,
     branch: branch.ok ? branch.out.trim() : null,
     dirty: status.ok ? status.out.trim().length > 0 : false,
-    remote: (run(['remote', 'get-url', 'origin']).out || '').trim() || null,
+    remote: remote.ok && remote.out.trim() ? remote.out.trim() : null,
   };
 }
 
@@ -210,6 +213,9 @@ function mergeCopy(srcDir, dstDir, top = true) {
   fs.mkdirSync(dstDir, { recursive: true });
   for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
     if (top && PRESERVE_ON_REPLACE.includes(entry.name) && exists(path.join(dstDir, entry.name))) continue;
+    // Never touch a link: `public/assets` may point at the shared store (lib/installs.mjs), and copying
+    // it as a file would follow the link and fail (or duplicate ~580 MB).
+    if (entry.isSymbolicLink()) continue;
     const s = path.join(srcDir, entry.name);
     const d = path.join(dstDir, entry.name);
     if (entry.isDirectory()) mergeCopy(s, d, false);

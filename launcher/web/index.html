@@ -27,10 +27,10 @@
         <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm8.4 4a6.6 6.6 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a6.7 6.7 0 0 0-1.7-1L15.8 3h-3.9l-.4 2.6a6.7 6.7 0 0 0-1.7 1l-2.4-1-2 3.4L5.5 11a6.6 6.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1c.5.4 1.1.8 1.7 1l.4 2.6h3.9l.4-2.6c.6-.2 1.2-.6 1.7-1l2.4 1 2-3.4-2-1.6c.1-.3.1-.7.1-1z"/></svg>
         <span>配置</span>
       </button>
-      <button class="nav-item" data-page="mods">
-        <svg viewBox="0 0 24 24"><path d="M20.5 11H19V7a2 2 0 0 0-2-2h-4V3.5a2.5 2.5 0 0 0-5 0V5H4a2 2 0 0 0-2 2v3.8h1.5a2.7 2.7 0 0 1 0 5.4H2V20a2 2 0 0 0 2 2h3.8v-1.5a2.7 2.7 0 0 1 5.4 0V22H16a2 2 0 0 0 2-2v-4h1.5a2.5 2.5 0 0 0 0-5z"/></svg>
-        <span>模组</span>
-        <em class="pill" id="nav-mods" hidden></em>
+      <button class="nav-item" data-page="versions">
+        <svg viewBox="0 0 24 24"><path d="M12 3 2 8l10 5 10-5-10-5zm0 7.2L4.6 6.6 12 2.9l7.4 3.7L12 10.2zM2 12l10 5 10-5-1.8-.9L12 15.1 3.8 11.1 2 12zm0 4 10 5 10-5-1.8-.9L12 19.1 3.8 15.1 2 16z"/></svg>
+        <span>版本</span>
+        <em class="pill" id="nav-versions" hidden></em>
       </button>
       <button class="nav-item" data-page="terminal">
         <svg viewBox="0 0 24 24"><path d="M3 4h18a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm3.7 5.3L5.3 10.7 8.6 14l-3.3 3.3 1.4 1.4L11.4 14zM12 17h7v-2h-7z"/></svg>
@@ -57,8 +57,8 @@
       <h1 id="page-title">主界面</h1>
       <div class="top-badges">
         <span class="badge" id="badge-version" title="已安装的游戏版本">版本 —</span>
+        <span class="badge" id="badge-version-label" hidden></span>
         <span class="badge" id="badge-update" hidden></span>
-        <span class="badge badge-warn" id="badge-mods" hidden></span>
         <span class="badge badge-server" id="badge-server">未运行</span>
       </div>
     </header>
@@ -229,11 +229,16 @@
             </label>
             <label class="field"><span>素材并发数（1–64）</span><input type="number" min="1" max="64" id="cfg-concurrency"></label>
             <label class="field check-field"><span>打开启动器时自动检查更新</span><input type="checkbox" id="cfg-autocheck"></label>
-            <label class="field wide"><span>模组中转仓库（GitHub 仓库地址，或直接指向 <code>index.json</code> 的 URL）</span>
-              <input type="text" id="cfg-mods-repo" spellcheck="false" placeholder="https://github.com/Starst796/Stronghold-Protocol-Mods">
+            <label class="field check-field"><span>多个版本共用一份素材</span><input type="checkbox" id="cfg-share-assets"></label>
+            <label class="field wide"><span>共享素材目录（留空 = 启动器目录下的 <code>shared/</code>）</span>
+              <input type="text" id="cfg-shared-dir" spellcheck="false" placeholder="留空 = &lt;启动器&gt;/shared">
             </label>
           </div>
-          <p class="fine">「模组」页从这里读取可选的模组；留空则关闭模组功能。</p>
+          <p class="fine">
+            开启「共用一份素材」后，各版本目录里的 <code>public/assets</code> 与 <code>public/fonts</code> 会指向共享目录，
+            N 个版本只需一份约 580 MB 的素材；改动此项后到「版本」页点「重建素材链接」生效。
+            不能建立链接的系统（部分 Windows）会自动改为复制。
+          </p>
         </div>
 
         <div class="card">
@@ -290,41 +295,65 @@
         </div>
       </section>
 
-      <!-- ============================ 模组 ============================ -->
-      <section class="page" id="page-mods">
+      <!-- ============================ 版本 ============================ -->
+      <section class="page" id="page-versions">
         <div class="card">
           <div class="card-head">
-            <h2>模组目录</h2>
+            <h2>当前版本</h2>
             <div class="card-head-actions">
-              <button class="btn ghost sm" id="btn-mods-refresh">刷新目录</button>
+              <button class="btn ghost sm" id="btn-versions-relink">重建素材链接</button>
             </div>
           </div>
-          <div class="status-grid" id="mods-meta"></div>
+          <div class="status-grid" id="versions-active"></div>
+          <p class="hint" id="versions-hint"></p>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>已安装版本</h2></div>
+          <div id="version-list" class="mod-list"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>添加版本（任意 fork）</h2></div>
+          <div class="form-grid">
+            <label class="field wide"><span>仓库地址（留空 = 用上面「下载源」里的上游仓库）</span>
+              <input type="text" id="add-repo" spellcheck="false" placeholder="https://github.com/作者/Stronghold-Protocol-Xxx.git">
+            </label>
+            <label class="field"><span>分支或标签</span>
+              <input type="text" id="add-ref" spellcheck="false" placeholder="master">
+            </label>
+            <label class="field"><span>显示名称（留空自动取名）</span>
+              <input type="text" id="add-label" spellcheck="false" placeholder="莱茵生命">
+            </label>
+          </div>
+          <div class="admin-actions">
+            <button class="btn primary" id="btn-add-version">克隆并安装</button>
+            <button class="btn ghost" id="btn-add-upstream">添加上游版本</button>
+          </div>
           <p class="fine">
-            模组的来源是<b>本项目自己的中转仓库</b>，不是直接去第三方 fork 下载：fork 的客制化改的是游戏源码，
-            上游的内容包（docs/PACKS.md）只承载数据、不加载第三方代码，所以每个 fork 由中转仓库针对一个固定的
-            上游版本打包成补丁，再由启动器应用到本地安装。
+            每个版本是一份独立、完整的源码检出（不叠加补丁），可分别启动。素材（约 580 MB）只下载一份，
+            各版本通过目录链接共用；删除版本不会删除共享素材。
           </p>
         </div>
 
         <div class="card">
-          <div class="card-head">
-            <h2>可选模组</h2>
-            <div class="card-head-actions">
-              <button class="btn ghost sm" id="btn-mods-none">全不选</button>
-            </div>
+          <div class="card-head"><h2>收纳已下载的目录</h2></div>
+          <div class="form-grid">
+            <label class="field wide"><span>目录绝对路径（已经 clone 好的 fork）</span>
+              <input type="text" id="adopt-dir" spellcheck="false" placeholder="/path/to/Stronghold-Protocol-Xxx">
+            </label>
+            <label class="field"><span>显示名称（留空用目录名）</span>
+              <input type="text" id="adopt-label" spellcheck="false">
+            </label>
           </div>
-          <div class="mod-list" id="mod-list"></div>
-          <div class="actions mod-actions">
-            <button class="btn primary lg" id="btn-mods-apply">应用所选模组</button>
-            <button class="btn danger lg" id="btn-mods-restore">还原为原版</button>
+          <div class="admin-actions">
+            <button class="btn ghost" id="btn-adopt-version">收纳为版本</button>
           </div>
-          <p class="hint" id="mods-hint"></p>
         </div>
 
         <div class="card">
-          <div class="card-head"><h2>当前安装状态</h2></div>
-          <div class="mod-list compact" id="mods-applied"></div>
+          <div class="card-head"><h2>共享素材</h2></div>
+          <div class="status-grid" id="shared-meta"></div>
         </div>
       </section>
 
@@ -335,7 +364,7 @@
             <div class="term-filters" id="term-filters">
               <button class="chip active" data-channel="all">全部</button>
               <button class="chip" data-channel="deploy">部署</button>
-              <button class="chip" data-channel="mods">模组</button>
+              <button class="chip" data-channel="server">服务器</button>
               <button class="chip" data-channel="server">服务器</button>
               <button class="chip" data-channel="update">更新</button>
               <button class="chip" data-channel="launcher">启动器</button>

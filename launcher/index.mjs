@@ -15,13 +15,18 @@ import { TaskRunner } from './lib/tasks.mjs';
 import { GameServer, probePort } from './lib/game.mjs';
 import {
   loadConfig, patchConfig, allPresets, sourceById, assetRouteOf, SOURCES, ROOT, BUILTIN_PRESETS, installDirOf,
+  activeInstall, BRANCH,
 } from './lib/config.mjs';
+import {
+  listInstalls, sharedStatus, installIdFor, installDirFor, cloneInstall, updateInstall, deleteInstall,
+  linkInstallAssets, ensureShared, recordCommit, describeRepo, sharedPublicDir,
+} from './lib/installs.mjs';
 import {
   inspectInstall, installFromSource, updateFromSource, npmCommand, gitCommand, gameDir, parseChangelog, gitInfo,
   syncAssets, assetManifestHeld, localArtState, localExtractArgs,
 } from './lib/repo.mjs';
 import {
-  modsState, modsStatus, fetchCatalog, applyMods, restoreGame, clearLock, validateSelection,
+  modsStatus, fetchCatalog, applyMods, restoreGame, clearLock, validateSelection,
 } from './lib/mods.mjs';
 import { checkUpdate, localHistory } from './lib/version.mjs';
 import {
@@ -54,6 +59,30 @@ if (Number(process.versions.node.split('.')[0]) < 22) {
 // ------------------------------------------------------------------------------------------------
 
 let config = loadConfig();
+
+/**
+ * Adopt a pre-existing install into the version registry.
+ *
+ * Every launcher built before the registry pointed `installDir` at one folder. Rather than make those
+ * users re-download, the folder becomes the first version: its git origin/branch are read back, and its
+ * art is moved into the shared store so the next version does not fetch ~580 MB again.
+ * @returns {{cfg:object, entry:(object|null)}} the migrated config and the version it adopted
+ */
+function migrateToInstalls(cfg) {
+  if ((cfg.installs || []).length) return { cfg, entry: null };
+  const dir = cfg.installDir;
+  if (!dir || !exists(path.join(dir, 'package.json'))) return { cfg, entry: null };
+  const { repo, ref } = describeRepo(dir);
+  const id = `default--${((repo || 'local').replace(/\.git$/, '').split('/').pop() || 'local').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24) || 'local'}`;
+  const entry = {
+    id,
+    label: repo ? `${repo.replace(/\.git$/, '').split('/').pop()}（已安装）` : '本地安装',
+    kind: repo.includes('sganggs/Stronghold-Protocol') ? 'upstream' : 'fork',
+    repo, ref: ref || 'master', dir, commit: recordCommit({ dir }), linkMode: '', addedAt: nowIso(),
+  };
+  return { cfg: patchConfig({ installs: [entry], activeInstallId: id }), entry };
+}
+
 const bus = new EventBus();
 const logStore = new LogStore(4000);
 
@@ -68,6 +97,26 @@ const game = new GameServer({
   getConfig: () => config,
   onEvent: (evt) => bus.emit(evt),
 });
+
+// Adopt a pre-registry install on first run, and move its art into the shared store.
+if ((config.installs || []).length === 0 && config.installDir) {
+  try {
+    const { cfg, entry } = migrateToInstalls(config);
+    if (entry) {
+      config = cfg;
+      log({ channel: 'launcher', stream: 'meta', line: `▶ 已把现有安装收纳为一个版本：${entry.label}` });
+      const r = linkInstallAssets(config, entry.dir, { move: false, log: (line, stream) => log({ channel: 'launcher', stream: stream || 'stdout', line }) });
+      if (r.mode === 'pending') log({ channel: 'launcher', stream: 'meta', line: '素材尚未接入共享区：到「版本」页点「重建素材链接」即可（会把已有素材收纳进共享区，不会重新下载）。' });
+      if (r.shared || r.mode !== 'skipped') {
+        const list = [...config.installs];
+        list[list.indexOf(activeInstall(config))] = { ...entry, linkMode: r.mode };
+        config = patchConfig({ installs: list });
+      }
+    }
+  } catch (e) {
+    log({ channel: 'launcher', stream: 'stderr', line: `收纳现有安装失败：${e?.message || e}` });
+  }
+}
 
 let installInfo = inspectInstall(config);
 let versionInfo = {
@@ -96,6 +145,7 @@ function refreshInstall() {
 
 function buildState() {
   const hasGit = hasCommand('git');
+  const sharingEnabled = config.shareAssets !== false;
   return {
     launcher: {
       version: LAUNCHER_VERSION,
@@ -117,7 +167,9 @@ function buildState() {
     install: installInfo,
     server: game.state,
     task: taskRunner.state,
-    mods: modsState(config),
+    installs: listInstalls(config),
+    activeInstallId: config.activeInstallId || null,
+    shared: sharingEnabled ? sharedStatus(config) : { ...sharedStatus(config), disabled: true },
     version: versionInfo,
     checkingVersion,
     self: { ...selfInfo, updateReady: selfUpdateReady, checking: checkingSelf },
@@ -130,6 +182,14 @@ function buildState() {
 
 const emitState = () => bus.emit({ type: 'state', state: buildState() });
 const toast = (message, level = 'info') => bus.emit({ type: 'toast', message, level });
+
+/** A version id that is free in the registry (a second copy of the same repo/ref gets a suffix). */
+function uniqueInstallId(cfg, base) {
+  const taken = new Set((cfg.installs || []).map((e) => e.id));
+  if (!taken.has(base)) return base;
+  for (let i = 2; i < 100; i++) if (!taken.has(`${base}-${i}`)) return `${base}-${i}`;
+  return `${base}-${Date.now().toString(36)}`;
+}
 
 // ------------------------------------------------------------------------------------------------
 // Task plans
@@ -197,6 +257,56 @@ const assetHealStep = (dir) => ({
   },
 });
 
+/**
+ * Make sure the active version's folder holds the sources, then wire its art to the shared store.
+ *
+ * Everything the launcher runs is one of these folders. New users start with none: the first deploy
+ * registers an upstream version from the chosen download source, so from then on the registry is the
+ * single source of truth. Users without git fall back to the archive route (repo.mjs).
+ */
+function ensureSources(ctx) {
+  const cfg = config;
+  let entry = activeInstall(cfg);
+  if (!entry) {
+    const src = sourceById(cfg.downloadSource);
+    const id = installIdFor(src.git, BRANCH);
+    entry = {
+      id, label: `原版 ${BRANCH}`, kind: 'upstream', repo: src.git, ref: BRANCH,
+      dir: installDirFor(id), commit: '', linkMode: '', addedAt: nowIso(),
+    };
+    config = patchConfig({ installs: [...(cfg.installs || []), entry], activeInstallId: id, installDir: entry.dir });
+    ctx.log(`▶ 已登记原版版本：${entry.label}`, 'meta');
+  }
+  const dir = entry.dir;
+  if (exists(path.join(dir, 'package.json'))) {
+    ctx.log(`目录已存在，跳过下载：${dir}`, 'meta');
+  } else if (gitCommand() && entry.repo) {
+    cloneInstall(dir, entry.repo, entry.ref, { log: (line, stream) => ctx.log(line, stream) });
+  } else {
+    // No git (or no recorded origin): the archive route downloads a tarball instead.
+    ctx.log('未使用 git 或没有来源仓库，改用压缩包下载…', 'meta');
+    return installFromSource(cfg, { log: (line, stream) => ctx.log(line, stream) });
+  }
+  const list = (config.installs || []).map((e) => (e.id === entry.id ? { ...e, commit: recordCommit({ dir }) } : e));
+  config = patchConfig({ installs: list });
+  return { adopted: false, dir };
+}
+
+/** A step that points the active version's `public/assets` + `public/fonts` at the shared store. */
+const linkStep = () => ({
+  label: '把素材目录接入共享区（可关闭）',
+  run: (ctx) => {
+    const entry = activeInstall(config);
+    if (!entry) { ctx.log('还没有版本，跳过。', 'meta'); return; }
+    if (config.shareAssets === false) { ctx.log('素材共享已关闭（配置里可开启）：该版本会自行下载素材。', 'meta'); return; }
+    const r = linkInstallAssets(config, entry.dir, { log: (line, stream) => ctx.log(line, stream) });
+    if (r.mode !== 'skipped') {
+      config = patchConfig({ installs: (config.installs || []).map((e) => (e.id === entry.id ? { ...e, linkMode: r.mode } : e)) });
+      ctx.log(`素材目录已接入共享区（方式：${r.mode}）`, 'meta');
+    }
+  },
+});
+
 function deploySteps(action) {
   const cfg = config;
   const dir = gameDir(cfg);
@@ -205,13 +315,17 @@ function deploySteps(action) {
   if (action === 'full') {
     steps.push({
       label: '下载 / 检出游戏源码',
-      run: (ctx) => installFromSource(cfg, { log: (line, stream) => ctx.log(line, stream) }),
+      run: (ctx) => ensureSources(ctx),
     });
+    steps.push(linkStep());
     steps.push(nodeStep('安装依赖、前端库并下载素材（可中断续传）', setupArgs(), dir, { env: setupEnv() }));
     steps.push(assetHealStep(dir));
   } else if (action === 'repair') {
+    steps.push(linkStep());
     steps.push(nodeStep('检查并补全依赖与素材（可中断续传）', setupArgs(), dir, { env: setupEnv() }));
     steps.push(assetHealStep(dir));
+  } else if (action === 'link') {
+    steps.push(linkStep());
   } else if (action === 'local') {
     // Re-extract the official client art (docs/DEPLOY.md §6): force it, so a stale extraction made by
     // an older extract.py can be refreshed. `--game` when the user pinned the client path.
@@ -401,6 +515,140 @@ const actions = {
     return { started: true };
   },
 
+  // ---------------------------------------------------------------- versions (lib/installs.mjs)
+  /**
+   * Register a version and install it. `body = { repo, ref, label }` — a GitHub URL plus branch/tag;
+   * empty `repo` means "upstream from the chosen download source".
+   */
+  installsAdd(body = {}) {
+    if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
+    const src = sourceById(config.downloadSource);
+    const repo = String(body.repo || '').trim() || src.git;
+    const ref = String(body.ref || '').trim() || BRANCH;
+    if (!/^(https?:\/\/|git@|ssh:\/\/|file:\/\/)/.test(repo) && !path.isAbsolute(repo)) {
+      return { started: false, error: '仓库地址需要是 https:// / git@ / ssh:// 地址，或本机上的绝对路径。' };
+    }
+    const id = uniqueInstallId(config, installIdFor(repo, ref));
+    const entry = {
+      id,
+      label: String(body.label || '').trim().slice(0, 80) || `${repo.replace(/\.git$/, '').split('/').pop()}（${ref}）`,
+      kind: /sganggs\/Stronghold-Protocol/.test(repo) ? 'upstream' : 'fork',
+      repo, ref,
+      dir: installDirFor(id),
+      commit: '', linkMode: '', addedAt: nowIso(),
+    };
+    if (exists(path.join(entry.dir, 'package.json'))) return { started: false, error: `这个版本已经在列表里了（目录已存在）：${entry.dir}` };
+    config = patchConfig({ installs: [...(config.installs || []), entry], activeInstallId: id, installDir: entry.dir });
+    log({ channel: 'deploy', stream: 'meta', line: `▶ 新版本：${entry.label}（${repo} @ ${ref}）` });
+    const promise = taskRunner.run('deploy', `安装版本：${entry.label}`, deploySteps('full'));
+    promise.then((r) => {
+      refreshInstall();
+      emitState();
+      toast(r.ok ? `版本「${entry.label}」已安装` : '安装失败，可在「终端」查看原因', r.ok ? 'ok' : 'error', 8000);
+    });
+    return { started: true, id };
+  },
+
+  /** Adopt an existing folder on disk as a version (for a fork the user already cloned). */
+  installsAdopt(body = {}) {
+    if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
+    const dir = String(body.dir || '').trim();
+    if (!dir || !path.isAbsolute(dir)) return { started: false, error: '请填写一个绝对路径。' };
+    if (!exists(path.join(dir, 'package.json'))) return { started: false, error: `这个目录里没有 package.json：${dir}` };
+    if ((config.installs || []).some((e) => e.dir === dir)) return { started: false, error: '这个目录已经在版本列表里了。' };
+    const { repo, ref } = describeRepo(dir);
+    const id = uniqueInstallId(config, installIdFor(repo || dir, ref || 'local'));
+    const entry = {
+      id,
+      label: String(body.label || '').trim().slice(0, 80) || path.basename(dir),
+      kind: repo && !/sganggs\/Stronghold-Protocol/.test(repo) ? 'fork' : (repo ? 'upstream' : 'fork'),
+      repo, ref: ref || '', dir, commit: recordCommit({ dir }), linkMode: '', addedAt: nowIso(),
+    };
+    config = patchConfig({ installs: [...(config.installs || []), entry], activeInstallId: id, installDir: dir });
+    const r = linkInstallAssets(config, dir, { log: (line, stream) => log({ channel: 'deploy', stream: stream || 'stdout', line }) });
+    config = patchConfig({ installs: (config.installs || []).map((e) => (e.id === id ? { ...e, linkMode: r.mode } : e)) });
+    refreshInstall();
+    emitState();
+    toast(`已收纳版本「${entry.label}」${r.shared ? '（素材已接入共享区）' : ''}`, 'ok', 8000);
+    return { ok: true, id };
+  },
+
+  installsActivate(body = {}) {
+    if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
+    const entry = (config.installs || []).find((e) => e.id === body.id);
+    if (!entry) return { started: false, error: '找不到这个版本。' };
+    const running = game.running;
+    if (running) return { started: false, error: '服务器正在运行：请先「停止服务器」，再切换版本（切换会重启进程）。' };
+    config = patchConfig({ activeInstallId: entry.id, installDir: entry.dir });
+    refreshInstall();
+    emitState();
+    toast(`已切换到「${entry.label}」——点「启动服务器」生效`, 'ok', 6000);
+    return { ok: true, activeInstallId: entry.id };
+  },
+
+  installsRemove(body = {}) {
+    if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
+    const entry = (config.installs || []).find((e) => e.id === body.id);
+    if (!entry) return { started: false, error: '找不到这个版本。' };
+    if (game.running && config.activeInstallId === entry.id) return { started: false, error: '这个版本正在运行：请先「停止服务器」。' };
+    const promise = taskRunner.run('deploy', `删除版本：${entry.label}`, [{
+      label: `删除版本目录（不动共享素材）`,
+      run: (ctx) => { deleteInstall(entry, { log: (line, stream) => ctx.log(line, stream) }); },
+    }]);
+    promise.then(() => {
+      const rest = (config.installs || []).filter((e) => e.id !== entry.id);
+      const active = config.activeInstallId === entry.id ? (rest[0]?.id || '') : config.activeInstallId;
+      config = patchConfig({ installs: rest, activeInstallId: active, installDir: rest.find((e) => e.id === active)?.dir || '' });
+      refreshInstall();
+      emitState();
+      toast(`已删除版本「${entry.label}」`, 'ok', 6000);
+    });
+    return { started: true };
+  },
+
+  installsUpdate(body = {}) {
+    if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
+    const entry = (config.installs || []).find((e) => e.id === body.id);
+    if (!entry) return { started: false, error: '找不到这个版本。' };
+    if (game.running && config.activeInstallId === entry.id) return { started: false, error: '这个版本正在运行：请先「停止服务器」再更新。' };
+    const force = body.force === true;
+    const dir = entry.dir;
+    const steps = [
+      { label: force ? '更新版本（丢弃该版本的本地改动）' : '更新版本', run: (ctx) => {
+        const r = updateInstall(config, entry, { force, log: (line, stream) => ctx.log(line, stream) });
+        config = patchConfig({ installs: (config.installs || []).map((e) => (e.id === entry.id ? { ...e, commit: r.commit } : e)) });
+      } },
+      nodeStep('同步依赖与素材', setupArgs(), dir, { env: setupEnv() }),
+      assetHealStep(dir),
+    ];
+    const promise = taskRunner.run('update', `更新版本：${entry.label}`, steps);
+    promise.then((r) => {
+      refreshInstall();
+      emitState();
+      toast(r.ok ? `版本「${entry.label}」已更新` : '更新失败，可在「终端」查看原因', r.ok ? 'ok' : 'error', 8000);
+    });
+    return { started: true };
+  },
+
+  /** Force the art link for every version (after toggling sharing, or after moving the shared folder). */
+  installsRelink() {
+    if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
+    if (config.shareAssets === false) return { started: false, error: '素材共享已关闭（先在「配置」里开启）。' };
+    if (game.running) return { started: false, error: '服务器正在运行：请先停止，再重建素材链接。' };
+    const list = [];
+    for (const entry of config.installs || []) {
+      if (!exists(path.join(entry.dir, 'package.json'))) continue;
+      const r = linkInstallAssets(config, entry.dir, { move: true, log: (line, stream) => log({ channel: 'deploy', stream: stream || 'stdout', line }) });
+      list.push({ ...entry, linkMode: r.mode });
+    }
+    config = patchConfig({ installs: list.length ? list : config.installs });
+    ensureShared(config);
+    refreshInstall();
+    emitState();
+    toast(`已重建 ${list.length} 个版本的素材链接`, 'ok', 6000);
+    return { ok: true, count: list.length };
+  },
+
   deploy: runDeploy,
   update: runUpdate,
   cancelTask: () => taskRunner.cancel(),
@@ -512,10 +760,21 @@ const actions = {
     return r;
   },
 
-  open(target) {
+  open(target, id) {
     const cfg = config;
+    if (target === 'install') {
+      const entry = (cfg.installs || []).find((e) => e.id === id) || activeInstall(cfg);
+      if (!entry) return { ok: false, error: '找不到这个版本。' };
+      const ok = openFolder(entry.dir);
+      return ok ? { ok: true, path: entry.dir } : { ok: false, error: `无法打开目录（不存在或被系统拒绝）：${entry.dir}` };
+    }
     if (target === 'folder' || target === 'launcher-folder') {
       const dir = target === 'folder' ? gameDir(cfg) : ROOT;
+      const ok = openFolder(dir);
+      return ok ? { ok: true, path: dir } : { ok: false, error: `无法打开目录（不存在或被系统拒绝）：${dir}` };
+    }
+    if (target === 'shared') {
+      const dir = sharedPublicDir(cfg);
       const ok = openFolder(dir);
       return ok ? { ok: true, path: dir } : { ok: false, error: `无法打开目录（不存在或被系统拒绝）：${dir}` };
     }
@@ -666,8 +925,6 @@ async function main() {
 
   if (config.autoUpdateCheck && installInfo.hasPackageJson) {
     setTimeout(() => { actions.checkVersion(false); }, 800);
-    // The mod catalog is a small JSON file in our relay repo; refresh it in the background too.
-    setTimeout(() => { actions.modsRefresh(); }, 1400);
   }
 
   process.on('SIGINT', () => { console.log('\n收到 Ctrl+C，正在退出…'); shutdown(0); });

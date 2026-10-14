@@ -252,6 +252,12 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .mod-list.compact .mod-check { width: 18px; height: 18px; border-radius: 6px; }
 .mod-list.compact .mod-card.on .mod-check::after { left: 5px; top: 2px; width: 5px; height: 9px; }
 
+/* version cards: a marker instead of a checkbox, with the per-version actions inside */
+#version-list .mod-card { cursor: default; align-items: flex-start; }
+#version-list .mod-card .mod-text { flex: 1 1 auto; }
+.ver-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.ver-actions .btn { font-size: 12px; }
+
 /* ------------------------------------------------- source */
 .source-results { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
 .source-results li { display: flex; gap: 8px; font-size: 12.5px; font-family: var(--mono); color: var(--text-dim); }

@@ -18,6 +18,12 @@ export const LOG_FILE = path.join(ROOT, 'launcher.log');
 /** Default game install directory: `<launcher>/game`. */
 export const DEFAULT_INSTALL_DIR = path.join(ROOT, 'game');
 
+/** Where the version folders live (`<launcher>/installs/<id>`). */
+export const INSTALLS_DIR = path.join(ROOT, 'installs');
+
+/** Default shared directory: the art / audio every version links to instead of downloading twice. */
+export const DEFAULT_SHARED_DIR = path.join(ROOT, 'shared');
+
 export const REPO_SLUG = 'sganggs/Stronghold-Protocol';
 export const REPO_URL = `https://github.com/${REPO_SLUG}`;
 export const BRANCH = 'master';
@@ -167,7 +173,11 @@ export const allPresets = (cfg) => [
 
 export const DEFAULT_CONFIG = {
   configVersion: 1,
-  installDir: '',            // '' → DEFAULT_INSTALL_DIR
+  installDir: '',            // '' → DEFAULT_INSTALL_DIR（兼容字段：等于当前版本的目录）
+  installs: [],              // the version registry (lib/installs.mjs): [{id,label,kind,repo,ref,dir,commit,linkMode}]
+  activeInstallId: '',       // which entry above is the one that runs
+  shareAssets: true,         // let every version share one copy of public/assets + public/fonts
+  sharedAssetsDir: '',       // '' → DEFAULT_SHARED_DIR
   downloadSource: 'github',
   clientDir: '',             // AssetBundle root of a local Arknights client ('' → setup.mjs auto-detects)
   extractLocal: true,        // let setup.mjs extract the official local-client art when a client is found
@@ -189,6 +199,33 @@ export const DEFAULT_CONFIG = {
   customPresets: {},
 };
 
+const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+const str = (v, max = 200) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+
+/**
+ * One version entry, sanitised. `dir` is stored absolute; the rest is plain text. Invalid entries are
+ * dropped rather than fixed up (a half-valid entry would resolve to the wrong directory).
+ * @param {unknown} e
+ * @param {number} i
+ */
+function coerceInstall(e, i) {
+  if (!isObj(e)) return null;
+  const dir = str(e.dir, 500);
+  if (!dir || !path.isAbsolute(dir)) return null;
+  const kind = e.kind === 'upstream' ? 'upstream' : 'fork';
+  return {
+    id: str(e.id, 64) || `install-${i + 1}`,
+    label: str(e.label, 80) || `版本 ${i + 1}`,
+    kind,
+    repo: str(e.repo, 300),
+    ref: str(e.ref, 120),
+    dir,
+    commit: str(e.commit, 40),
+    linkMode: str(e.linkMode, 20),
+    addedAt: str(e.addedAt, 40),
+  };
+}
+
 const COERCE = {
   port: (v) => Math.min(65535, Math.max(1, Number(v) || 3000)),
   host: (v) => String(v || '0.0.0.0'),
@@ -205,6 +242,10 @@ const COERCE = {
   enabledMods: (v) => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean).slice(0, 64) : []),
   assetConcurrency: (v) => Math.min(64, Math.max(1, Number(v) || 16)),
   installDir: (v) => String(v || ''),
+  installs: (v) => (Array.isArray(v) ? v.map(coerceInstall).filter(Boolean).slice(0, 32) : []),
+  activeInstallId: (v) => String(v || '').trim().slice(0, 64),
+  shareAssets: (v) => v !== false,
+  sharedAssetsDir: (v) => String(v || '').trim(),
   clientDir: (v) => String(v || '').trim(),
   extractLocal: (v) => v !== false,
   downloadSource: (v) => (SOURCES.some((s) => s.id === v) ? String(v) : 'github'),
@@ -240,11 +281,22 @@ export function patchConfig(patch) {
   }
   if (next.installDir && !path.isAbsolute(next.installDir)) next.installDir = path.resolve(ROOT, next.installDir);
   if (next.clientDir && !path.isAbsolute(next.clientDir)) next.clientDir = path.resolve(ROOT, next.clientDir);
+  if (next.sharedAssetsDir && !path.isAbsolute(next.sharedAssetsDir)) next.sharedAssetsDir = path.resolve(ROOT, next.sharedAssetsDir);
   return saveConfig(next);
 }
 
-/** Absolute install directory for the game. */
-export const installDirOf = (cfg) => (cfg.installDir || DEFAULT_INSTALL_DIR);
+/** The active version entry, or null. */
+export const activeInstall = (cfg) => (cfg.installs || []).find((i) => i.id === cfg.activeInstallId) || null;
+
+/**
+ * Absolute directory of the game to run: the active version's folder, else the legacy `installDir`.
+ * Keeping this one function authoritative means every existing caller (repo, game, version, …)
+ * follows the selected version without knowing about the registry.
+ */
+export const installDirOf = (cfg) => (activeInstall(cfg)?.dir || cfg.installDir || DEFAULT_INSTALL_DIR);
+
+/** Absolute directory of the shared asset store ('' → DEFAULT_SHARED_DIR). */
+export const sharedDirOf = (cfg) => (cfg.sharedAssetsDir || DEFAULT_SHARED_DIR);
 
 /** The environment variables the game server reads (see the project README). */
 export function serverEnv(cfg) {

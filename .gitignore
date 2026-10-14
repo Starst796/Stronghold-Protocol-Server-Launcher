@@ -1,5 +1,7 @@
 node_modules/
 game/
+installs/
+shared/
 .cache/
 runtime/node/
 runtime/_unzip/
