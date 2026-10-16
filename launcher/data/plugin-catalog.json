@@ -1,0 +1,363 @@
+{
+  "version": 1,
+  "updatedAt": "2026-10-17",
+  "note": "随启动器一起维护的插件目录：只记录「有什么、适不适合当前引擎、需要什么授权、去哪取」，启动器不托管任何字节。有 dist 的条目直接装作者发布的 zip，并逐个用 sha256 校验（哈希取自作者 release 里的 SHA256SUMS，并由本项目下载实际字节复核过）；只有 source 的条目由启动器从作者仓库取回文件夹再用引擎的 pack/check 打锁；install=manual 的条目只能按作者说明自行处理。 另外：条目里的 authorNote 是作者自己声明的限制，本项目不代为解释或保证。",
+  "plugins": [
+    {
+      "id": "lele-damage",
+      "name": "伤害统计",
+      "englishName": "",
+      "class": "content",
+      "version": "0.3.1",
+      "app": ">=0.3.0 <0.4.0",
+      "api": 1,
+      "scope": [
+        "room"
+      ],
+      "permissions": [
+        "data.patch"
+      ],
+      "authors": [
+        "Stardust-minus"
+      ],
+      "license": "GPL-3.0-or-later",
+      "homepage": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods",
+      "description": "整合适配：llleeeqi。实际扣血排行，召唤物归属干员，仅保留本轮与上一轮。 需要本仓库0.3.0宿主适配；原版宿主会拒绝加载，不会以残缺玩法开局。",
+      "source": {
+        "repo": "llleeeqi/Stronghold-Protocol-Lele-Mods",
+        "branch": "main",
+        "path": "plugins/lele-damage"
+      },
+      "dist": {
+        "url": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods/releases/download/v0.3.0-lele.7/lele-damage-0.3.1.zip",
+        "sha256": "791368e5ff99eb35971cf619e9205977a6510273bf57aa5745f7913d00246ed3",
+        "bytes": 2108,
+        "version": "0.3.1",
+        "tag": "v0.3.0-lele.7",
+        "sha256DeclaredByAuthor": true
+      },
+      "authorNote": "作者提示：这 8 个插件配套一个「宿主适配 API 1」的共享宿主补丁（仓库里的 patches/ + scripts/finalize-plugin-host.mjs），部分流程（科研装置、魂灵、收藏品复活）在上游还没有完整插件接口。本项目实测：纯原版 0.3.0 上引擎会正常装载它们（[plugins] … content, loaded，无警告无跳过），但要不要装那层补丁、装哪种宿主，请读作者说明后自行决定。"
+    },
+    {
+      "id": "lele-factions",
+      "name": "更多阵营",
+      "englishName": "",
+      "class": "content",
+      "version": "0.3.1",
+      "app": ">=0.3.0 <0.4.0",
+      "api": 1,
+      "scope": [
+        "room"
+      ],
+      "permissions": [
+        "data.patch"
+      ],
+      "authors": [
+        "YUYUYUYUYUYUYUTOUA",
+        "SrC2O4"
+      ],
+      "license": "GPL-3.0-or-later",
+      "homepage": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods",
+      "description": "整合适配：llleeeqi。莱茵生命科研与装置、卡兹戴尔魂灵与21格炮击、转职装备；含谬因二技能。 需要本仓库0.3.0宿主适配；原版宿主会拒绝加载，不会以残缺玩法开局。",
+      "source": {
+        "repo": "llleeeqi/Stronghold-Protocol-Lele-Mods",
+        "branch": "main",
+        "path": "plugins/lele-factions"
+      },
+      "dist": {
+        "url": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods/releases/download/v0.3.0-lele.7/lele-factions-0.3.1.zip",
+        "sha256": "3f9f9b0f771e60be685c7d9d7ecfcc5d92e3d9c460bd959c915b9f29196004cd",
+        "bytes": 43074,
+        "version": "0.3.1",
+        "tag": "v0.3.0-lele.7",
+        "sha256DeclaredByAuthor": true
+      },
+      "authorNote": "作者提示：这 8 个插件配套一个「宿主适配 API 1」的共享宿主补丁（仓库里的 patches/ + scripts/finalize-plugin-host.mjs），部分流程（科研装置、魂灵、收藏品复活）在上游还没有完整插件接口。本项目实测：纯原版 0.3.0 上引擎会正常装载它们（[plugins] … content, loaded，无警告无跳过），但要不要装那层补丁、装哪种宿主，请读作者说明后自行决定。"
+    },
+    {
+      "id": "lele-lucky",
+      "name": "恭喜发财",
+      "englishName": "",
+      "class": "content",
+      "version": "0.3.1",
+      "app": ">=0.3.0 <0.4.0",
+      "api": 1,
+      "scope": [
+        "room"
+      ],
+      "permissions": [
+        "data.patch"
+      ],
+      "authors": [
+        "RiZhiZhaoYi"
+      ],
+      "license": "GPL-3.0-or-later",
+      "homepage": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods",
+      "description": "整合适配：llleeeqi。每个席位随机不同五阶开局，仍使用共享卡池。 需要本仓库0.3.0宿主适配；原版宿主会拒绝加载，不会以残缺玩法开局。",
+      "source": {
+        "repo": "llleeeqi/Stronghold-Protocol-Lele-Mods",
+        "branch": "main",
+        "path": "plugins/lele-lucky"
+      },
+      "dist": {
+        "url": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods/releases/download/v0.3.0-lele.7/lele-lucky-0.3.1.zip",
+        "sha256": "1bd99401f324c72946ad2c1533940b988ce24e3b686dc1b241d192a1392286a6",
+        "bytes": 2071,
+        "version": "0.3.1",
+        "tag": "v0.3.0-lele.7",
+        "sha256DeclaredByAuthor": true
+      },
+      "authorNote": "作者提示：这 8 个插件配套一个「宿主适配 API 1」的共享宿主补丁（仓库里的 patches/ + scripts/finalize-plugin-host.mjs），部分流程（科研装置、魂灵、收藏品复活）在上游还没有完整插件接口。本项目实测：纯原版 0.3.0 上引擎会正常装载它们（[plugins] … content, loaded，无警告无跳过），但要不要装那层补丁、装哪种宿主，请读作者说明后自行决定。"
+    },
+    {
+      "id": "lele-operators",
+      "name": "新干员包",
+      "englishName": "",
+      "class": "content",
+      "version": "0.3.1",
+      "app": ">=0.3.0 <0.4.0",
+      "api": 1,
+      "scope": [
+        "room"
+      ],
+      "permissions": [
+        "data.patch"
+      ],
+      "authors": [
+        "remember-4"
+      ],
+      "license": "GPL-3.0-or-later",
+      "homepage": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods",
+      "description": "整合适配：llleeeqi。结城理、娜仁图亚、予愿安洁莉娜、丰川祥子；包含原有技能和模组。 需要本仓库0.3.0宿主适配；原版宿主会拒绝加载，不会以残缺玩法开局。",
+      "source": {
+        "repo": "llleeeqi/Stronghold-Protocol-Lele-Mods",
+        "branch": "main",
+        "path": "plugins/lele-operators"
+      },
+      "dist": {
+        "url": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods/releases/download/v0.3.0-lele.7/lele-operators-0.3.1.zip",
+        "sha256": "872c2d65759e865bc140a582f1ee925144ec2ffc51ee3243346e66cf407b7937",
+        "bytes": 14802,
+        "version": "0.3.1",
+        "tag": "v0.3.0-lele.7",
+        "sha256DeclaredByAuthor": true
+      },
+      "authorNote": "作者提示：这 8 个插件配套一个「宿主适配 API 1」的共享宿主补丁（仓库里的 patches/ + scripts/finalize-plugin-host.mjs），部分流程（科研装置、魂灵、收藏品复活）在上游还没有完整插件接口。本项目实测：纯原版 0.3.0 上引擎会正常装载它们（[plugins] … content, loaded，无警告无跳过），但要不要装那层补丁、装哪种宿主，请读作者说明后自行决定。"
+    },
+    {
+      "id": "lele-recruits",
+      "name": "额外干员包",
+      "englishName": "",
+      "class": "content",
+      "version": "0.3.1",
+      "app": ">=0.3.0 <0.4.0",
+      "api": 1,
+      "scope": [
+        "room"
+      ],
+      "permissions": [
+        "data.patch"
+      ],
+      "authors": [
+        "Lunac1a"
+      ],
+      "license": "GPL-3.0-or-later",
+      "homepage": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods",
+      "description": "整合适配：llleeeqi。望、赤刃明霄陈、凯尔希·思衡托、维什戴尔；与更多阵营共用时采用卡兹戴尔维什戴尔。 需要本仓库0.3.0宿主适配；原版宿主会拒绝加载，不会以残缺玩法开局。",
+      "source": {
+        "repo": "llleeeqi/Stronghold-Protocol-Lele-Mods",
+        "branch": "main",
+        "path": "plugins/lele-recruits"
+      },
+      "dist": {
+        "url": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods/releases/download/v0.3.0-lele.7/lele-recruits-0.3.1.zip",
+        "sha256": "6bf9340095550772a16b0be1b86c72937e5a5a8d6a84c05019bececc156a226d",
+        "bytes": 14904,
+        "version": "0.3.1",
+        "tag": "v0.3.0-lele.7",
+        "sha256DeclaredByAuthor": true
+      },
+      "authorNote": "作者提示：这 8 个插件配套一个「宿主适配 API 1」的共享宿主补丁（仓库里的 patches/ + scripts/finalize-plugin-host.mjs），部分流程（科研装置、魂灵、收藏品复活）在上游还没有完整插件接口。本项目实测：纯原版 0.3.0 上引擎会正常装载它们（[plugins] … content, loaded，无警告无跳过），但要不要装那层补丁、装哪种宿主，请读作者说明后自行决定。"
+    },
+    {
+      "id": "lele-relics",
+      "name": "收藏品玩法",
+      "englishName": "",
+      "class": "content",
+      "version": "0.3.1",
+      "app": ">=0.3.0 <0.4.0",
+      "api": 1,
+      "scope": [
+        "room"
+      ],
+      "permissions": [
+        "data.patch"
+      ],
+      "authors": [
+        "UNDFFIO"
+      ],
+      "license": "GPL-3.0-or-later",
+      "homepage": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods",
+      "description": "整合适配：llleeeqi。46件收藏品、战后三选一、一次复活与敌人转移等；不包含鸭梨手机。 需要本仓库0.3.0宿主适配；原版宿主会拒绝加载，不会以残缺玩法开局。",
+      "source": {
+        "repo": "llleeeqi/Stronghold-Protocol-Lele-Mods",
+        "branch": "main",
+        "path": "plugins/lele-relics"
+      },
+      "dist": {
+        "url": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods/releases/download/v0.3.0-lele.7/lele-relics-0.3.1.zip",
+        "sha256": "beb22bf4c4baa8daf3c7d4db74c370efa1b3173b63abdacd1318f9c049ff2801",
+        "bytes": 2121,
+        "version": "0.3.1",
+        "tag": "v0.3.0-lele.7",
+        "sha256DeclaredByAuthor": true
+      },
+      "authorNote": "作者提示：这 8 个插件配套一个「宿主适配 API 1」的共享宿主补丁（仓库里的 patches/ + scripts/finalize-plugin-host.mjs），部分流程（科研装置、魂灵、收藏品复活）在上游还没有完整插件接口。本项目实测：纯原版 0.3.0 上引擎会正常装载它们（[plugins] … content, loaded，无警告无跳过），但要不要装那层补丁、装哪种宿主，请读作者说明后自行决定。"
+    },
+    {
+      "id": "lele-rounds",
+      "name": "额外 4 回合",
+      "englishName": "",
+      "class": "content",
+      "version": "0.3.2",
+      "app": ">=0.3.0 <0.4.0",
+      "api": 1,
+      "scope": [
+        "room"
+      ],
+      "permissions": [
+        "data.patch"
+      ],
+      "authors": [
+        "llleeeqi"
+      ],
+      "license": "GPL-3.0-or-later",
+      "homepage": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods",
+      "description": "整合适配：llleeeqi。常规14→18，短单人9→13；常规Boss仍在最终回合；隐藏Boss保留原版触发条件，常规模式满足后进入第19回合。 需要本仓库0.3.0宿主适配；原版宿主会拒绝加载，不会以残缺玩法开局。",
+      "source": {
+        "repo": "llleeeqi/Stronghold-Protocol-Lele-Mods",
+        "branch": "main",
+        "path": "plugins/lele-rounds"
+      },
+      "dist": {
+        "url": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods/releases/download/v0.3.0-lele.8/lele-rounds-0.3.2.zip",
+        "sha256": "80105b70e72493a8df3696c19985e2e0f06709de7874918c2881a2c0f49addd5",
+        "bytes": 5631,
+        "version": "0.3.2",
+        "tag": "v0.3.0-lele.8",
+        "sha256DeclaredByAuthor": true
+      },
+      "authorNote": "作者提示：这 8 个插件配套一个「宿主适配 API 1」的共享宿主补丁（仓库里的 patches/ + scripts/finalize-plugin-host.mjs），部分流程（科研装置、魂灵、收藏品复活）在上游还没有完整插件接口。本项目实测：纯原版 0.3.0 上引擎会正常装载它们（[plugins] … content, loaded，无警告无跳过），但要不要装那层补丁、装哪种宿主，请读作者说明后自行决定。"
+    },
+    {
+      "id": "lele-targeted",
+      "name": "定向甄选",
+      "englishName": "",
+      "class": "content",
+      "version": "0.3.1",
+      "app": ">=0.3.0 <0.4.0",
+      "api": 1,
+      "scope": [
+        "room"
+      ],
+      "permissions": [
+        "data.patch"
+      ],
+      "authors": [
+        "Strinova-xinghui"
+      ],
+      "license": "GPL-3.0-or-later",
+      "homepage": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods",
+      "description": "整合适配：llleeeqi。晋升奖励第一位向主要盟约加权2.6倍，后两位随机；第6回合起转职装备同样加权。 需要本仓库0.3.0宿主适配；原版宿主会拒绝加载，不会以残缺玩法开局。",
+      "source": {
+        "repo": "llleeeqi/Stronghold-Protocol-Lele-Mods",
+        "branch": "main",
+        "path": "plugins/lele-targeted"
+      },
+      "dist": {
+        "url": "https://github.com/llleeeqi/Stronghold-Protocol-Lele-Mods/releases/download/v0.3.0-lele.7/lele-targeted-0.3.1.zip",
+        "sha256": "7d1876596024e4db219cedccd128e0baa9c841b58b431a4c14c5ff0cf94f0e9d",
+        "bytes": 2181,
+        "version": "0.3.1",
+        "tag": "v0.3.0-lele.7",
+        "sha256DeclaredByAuthor": true
+      },
+      "authorNote": "作者提示：这 8 个插件配套一个「宿主适配 API 1」的共享宿主补丁（仓库里的 patches/ + scripts/finalize-plugin-host.mjs），部分流程（科研装置、魂灵、收藏品复活）在上游还没有完整插件接口。本项目实测：纯原版 0.3.0 上引擎会正常装载它们（[plugins] … content, loaded，无警告无跳过），但要不要装那层补丁、装哪种宿主，请读作者说明后自行决定。"
+    },
+    {
+      "id": "spin-bounce",
+      "name": "粥友的酒",
+      "englishName": "Spin & Bounce",
+      "class": "trusted",
+      "version": "0.1.0",
+      "app": ">=0.3.0 <0.4.0",
+      "api": 1,
+      "scope": [
+        "server",
+        "room"
+      ],
+      "permissions": [
+        "trusted.page"
+      ],
+      "authors": [
+        "Harekasa"
+      ],
+      "license": "GPL-3.0-or-later",
+      "homepage": "https://github.com/AndyYang12345/ZhouYou-sBeer-Stronghold-Protocol-Plugin",
+      "description": "把「粥友的酒」那个梗做成单位特效：我方与敌方单位都在自己的格子里同步压扁—回弹，同时绕竖直轴自转（宽度按 cos θ 收缩、过零时自然镜像，并换成真正的背面立绘）。可在设置面板里分别开关「粥友的酒」与「喝酒的小曲」，后者播放你自备的音乐。",
+      "source": {
+        "repo": "AndyYang12345/ZhouYou-sBeer-Stronghold-Protocol-Plugin",
+        "branch": "master",
+        "path": "plugin/spin-bounce"
+      }
+    },
+    {
+      "id": "operator-skin-select",
+      "name": "干员皮肤选择插件",
+      "class": "cosmetic",
+      "version": "0.1.1",
+      "app": ">=0.3.0 <0.4.0",
+      "scope": [
+        "personal"
+      ],
+      "permissions": [
+        "assets.override"
+      ],
+      "authors": [
+        "Flotiarenor"
+      ],
+      "license": "见 NOTICE.md（美术版权归 Hypergryph / Yostar，非商业同人用途）",
+      "homepage": "https://github.com/Flotiarenor/arknights-skin-plugin",
+      "description": "把干员皮肤做成可选外观。",
+      "source": {
+        "repo": "Flotiarenor/arknights-skin-plugin",
+        "branch": "master",
+        "path": "operator-skin-select"
+      },
+      "install": "manual",
+      "manualReason": "仓库里不含素材：它靠 extract/ 从你自己安装的明日方舟客户端提取美术，再用 deploy.mjs 生成插件。缺 assets.json，引擎自检会报 PLUGIN_FILE_MISSING。"
+    },
+    {
+      "id": "sp-mp",
+      "name": "多人容量叠加层（sp-mp）",
+      "class": "非标准",
+      "version": "1.6.1",
+      "app": "",
+      "scope": [],
+      "permissions": [],
+      "authors": [
+        "secret-c"
+      ],
+      "license": "见仓库 LICENSE",
+      "homepage": "https://github.com/secret-c/stronghold-protocol-plugins",
+      "description": "4/8/12 人房间、同盟聊天、伤害统计等，按叠加层方式运行。",
+      "source": {
+        "repo": "secret-c/stronghold-protocol-plugins",
+        "branch": "main",
+        "path": "sp-mp"
+      },
+      "install": "manual",
+      "manualReason": "不是引擎的 manifest 2 格式（自带 start.mjs / hooks.mjs / rebase，顶层写 base: 0.2.6），离开它自己的启动器装不了；请按它的 README 操作。"
+    }
+  ]
+}

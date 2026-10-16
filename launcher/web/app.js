@@ -160,7 +160,7 @@ function setPage(page) {
   $('#page-title').textContent = PAGE_TITLES[page] || page;
   if (page === 'terminal') scrollTermToEnd(true);
   if (page === 'versions') ensureReleases();
-  if (page === 'modsource') ensureModSource();
+  if (page === 'modsource') { ensureModSource(); loadPluginSource(); }
 }
 
 // ------------------------------------------------------------------ toasts & modal
@@ -681,6 +681,7 @@ function render() {
   renderVersions();
   renderReleaseList();
   renderModSource();
+  renderPluginSource();
   renderAbout();
   renderTaskProgress();
 }
@@ -1085,6 +1086,65 @@ function wire() {
     } catch (err) { toast(`${err.message}`, 'error'); }
   });
 
+  // ---- 插件源
+  $('#btn-plug-engine').addEventListener('click', async () => {
+    try {
+      const r = await api('/api/pluginsource', 'POST');
+      S.pluginSource = { ...(S.pluginSource || {}), ...r };
+      plugItems = r.items || [];
+      plugEngine = r.engineList || null;
+      renderPluginSource();
+      const el = r.engineList;
+      if (!el?.ok) return toast(el?.error || '引擎没有返回清单', 'error');
+      for (const p of el.plugins || []) {
+        termAppend({ channel: 'mods', stream: 'stdout', line: `${p.status === 'loaded' ? '✔' : '·'} ${p.id} ${p.class} ${p.status}${p.compatible ? '' : '（不兼容）'}` });
+      }
+      toast(`引擎清单已输出到「终端」（${(el.plugins || []).length} 个）`, 'ok');
+    } catch (e) { toast(e.message, 'error'); }
+  });
+  $('#btn-plug-zip').addEventListener('click', () => $('#plug-file').click());
+  $('#plug-file').addEventListener('change', async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    e.target.value = '';
+    if (f.size > 60 * 1024 * 1024) return toast('zip 超过 60 MB，请先确认是不是插件包。', 'error');
+    const b64 = await new Promise((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = () => res(String(fr.result).split(',')[1] || '');
+      fr.onerror = () => rej(new Error('读取文件失败'));
+      fr.readAsDataURL(f);
+    });
+    try {
+      const r = await api('/api/pluginsource/install', 'POST', { zip: b64, name: f.name });
+      toast(r.started ? `已开始安装 ${f.name}` : (r.error || '无法安装'), r.started ? 'ok' : 'error');
+    } catch (err) { toast(`导入失败：${err.message}`, 'error'); }
+  });
+  $('#btn-plug-url').addEventListener('click', async () => {
+    const url = prompt('插件 zip 的 https 地址：\n\n（也可以填一份插件目录 catalogue 的地址，但我们只从中取单条包）');
+    if (!url) return;
+    try {
+      const r = await api('/api/pluginsource/install', 'POST', { url: url.trim() });
+      toast(r.started ? '已开始下载并安装' : (r.error || '无法安装'), r.started ? 'ok' : 'error');
+    } catch (e) { toast(e.message, 'error'); }
+  });
+  $('#plug-list').addEventListener('click', async (e) => {
+    const t = e.target.closest('[data-act]');
+    if (!t) return;
+    const act = t.dataset.act;
+    if (act === 'plug-open') { window.open(t.dataset.url, '_blank', 'noopener'); return; }
+    try {
+      if (act === 'plug-install') {
+        t.disabled = true;
+        const r = await api('/api/pluginsource/install', 'POST', { id: t.dataset.id });
+        if (r.started) toast(`已开始安装 ${t.dataset.id}`, 'ok'); else { toast(r.error || '无法安装', 'error'); t.disabled = false; }
+      } else if (act === 'plug-remove') {
+        if (!confirm(`卸载插件 ${t.dataset.id}？\n\n会删掉 plugins/${t.dataset.id}/（这是启动器装的，可直接重装）。`)) return;
+        const r = await api('/api/pluginsource/remove', 'POST', { id: t.dataset.id });
+        toast(r.ok ? '已卸载' : (r.error || '卸载失败'), r.ok ? 'ok' : 'error');
+      }
+    } catch (err) { toast(err.message, 'error'); }
+  });
+
   // ---- git notice banner
   $('#git-notice-copy').addEventListener('click', () => {
     const el = $('#git-notice');
@@ -1270,6 +1330,108 @@ function renderModSource() {
       <div class="src-actions">${actions}</div>
     </div>`;
   }).join('');
+}
+
+// ------------------------------------------------------------------ 插件源
+let plugItems = [];
+/** The engine's own list, kept out of `S` because the SSE state does not carry it and would blank it. */
+let plugEngine = null;
+
+async function loadPluginSource() {
+  const host = $('#plug-list');
+  if (!host) return;
+  try {
+    const r = await api('/api/pluginsource', 'POST');
+    plugItems = r.items || [];
+    plugEngine = r.engineList || null;
+    S.pluginSource = { ...(S.pluginSource || {}), ...r };
+  } catch (e) { toast(`读取插件目录失败：${e.message}`, 'error'); }
+  renderPluginSource();
+}
+
+function renderPluginSource() {
+  const host = $('#plug-list');
+  if (!host) return;
+  const ps = S?.pluginSource || {};
+  const cat = ps.catalog || {};
+  const engine = ps.engine || '';
+  const el = plugEngine;
+  if ($('#plug-file-path')) $('#plug-file-path').textContent = cat.file || 'launcher/data/plugin-catalog.json';
+
+  $('#plug-meta').innerHTML = [
+    ['引擎', engine || '—', ''],
+    ['插件系统', ps.available ? '可用' : '不可用', ps.available ? 'ok' : 'warn'],
+    ['目录条目', String(cat.count ?? plugItems.length ?? 0), ''],
+    ['目录更新', cat.updatedAt || '—', ''],
+    ['引擎已认到', el?.ok ? `${(el.plugins || []).filter((p) => p.status === 'loaded').length} 个已装载` : '—', ''],
+  ].map(([k, v, cls]) => `<div class="status-item"><span class="k">${escapeHtml(k)}</span><span class="v ${cls}">${escapeHtml(String(v))}</span></div>`).join('');
+
+  const sup = $('#plug-support');
+  sup.textContent = ps.available
+    ? (elasticHint(el) || '')
+    : (ps.reason || '插件需要引擎 0.3.0 及以上。');
+  sup.className = ps.available ? 'hint' : 'hint warn';
+
+  const busy = S.task.status === 'running';
+  if (!plugItems.length) {
+    host.innerHTML = '<p class="fine">目录为空或还没读取。</p>';
+    return;
+  }
+  const scopeText = (it) => (it.scope || []).map((x) => ({ room: '房间（房主开）', personal: '个人（自己开）', server: '服务端（需授权）' }[x] || x)).join('、') || '—';
+  host.innerHTML = plugItems.map((it) => {
+    const have = it.installed;
+    const verdict = it.appVerdict === 'ok' ? '<span class="badge badge-ok">与本引擎匹配</span>'
+      : it.appVerdict === 'bad' ? `<span class="badge badge-warn">不匹配本引擎（需要 ${escapeHtml(it.app)}）</span>`
+        : '<span class="badge">未声明适用版本</span>';
+    const gated = ['script', 'trusted'].includes(it.class);
+    const badges = [
+      `<span class="badge">v${escapeHtml(it.version)}</span>`,
+      `<span class="badge">${escapeHtml(it.class)}</span>`,
+      verdict,
+      have ? '<span class="badge badge-ok">已装</span>' : '',
+      it.dist ? `<span class="badge">${fmtBytes(it.dist.bytes)}${it.dist.declared ? ' · 作者提供哈希' : ''}</span>` : (it.manual ? '<span class="badge badge-warn">需自行处理</span>' : '<span class="badge">从作者仓库取</span>'),
+      gated ? '<span class="badge badge-warn">默认不执行</span>' : '',
+    ].join('');
+    const eng = (plugEngine?.plugins || []).find((p) => p.id === it.id);
+    const meta = [
+      it.id,
+      eng ? `引擎：${eng.status}${eng.compatible ? '' : '（不兼容）'}` : '',
+      it.authors?.length ? `作者 ${it.authors.join('、')}` : '',
+      it.license ? `许可 ${String(it.license).slice(0, 40)}` : '',
+      `范围 ${scopeText(it)}`,
+      it.permissions?.length ? `权限 ${it.permissions.join(' / ')}` : '',
+    ].filter(Boolean).join(' · ');
+    const actions = [
+      it.manual
+        ? `<button class="btn ghost sm" data-act="plug-open" data-url="${escapeHtml(it.homepage)}">看作者说明</button>`
+        : have
+          ? `<button class="btn ghost sm" data-act="plug-remove" data-id="${escapeHtml(it.id)}" ${busy ? 'disabled' : ''}>卸载</button>`
+          : `<button class="btn primary sm" data-act="plug-install" data-id="${escapeHtml(it.id)}" ${busy || !ps.available ? 'disabled' : ''}>安装</button>`,
+      it.homepage ? `<button class="btn ghost sm" data-act="plug-open" data-url="${escapeHtml(it.homepage)}">仓库</button>` : '',
+    ].join('');
+    return `<div class="src-item${it.appVerdict === 'bad' ? ' dim' : ''}">
+      <div class="src-main">
+        <div class="src-title">${escapeHtml(it.name)}${it.englishName ? ` <span class="src-sub">${escapeHtml(it.englishName)}</span>` : ''}${badges}</div>
+        <div class="src-sub">${escapeHtml(meta)}</div>
+        ${it.description ? `<div class="src-note">作者原文：${escapeHtml(it.description)}</div>` : ''}
+        ${it.manual ? `<div class="src-note warn">${escapeHtml(it.manualReason)}</div>` : ''}
+        ${it.authorNote ? `<div class="src-note">${escapeHtml(it.authorNote)}</div>` : ''}
+      </div>
+      <div class="src-actions">${actions}</div>
+    </div>`;
+  }).join('');
+}
+
+/** A one-line summary of what the engine reported, when it reported anything. */
+function elasticHint(el) {
+  if (!el?.ok) return '';
+  const parts = [];
+  const loaded = (el.plugins || []).filter((p) => p.status === 'loaded');
+  const content = loaded.filter((p) => ['content', 'cosmetic', 'ui', 'trusted', 'script'].includes(p.class));
+  parts.push(`引擎已装载 ${content.length} 个可选插件`);
+  if (el.skipped?.length) parts.push(`${el.skipped.length} 个被跳过`);
+  if (el.warnings?.length) parts.push(`${el.warnings.length} 条警告`);
+  return `${parts.join('，')}。点「同步引擎清单」可看引擎自己的判断。`;
 }
 
 // ------------------------------------------------------------------ boot

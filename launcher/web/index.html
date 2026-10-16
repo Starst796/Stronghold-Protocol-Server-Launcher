@@ -394,7 +394,34 @@
 
         <div class="card">
           <div class="card-head">
-            <h2>可安装的包</h2>
+            <h2>插件源（引擎的插件系统）</h2>
+            <div class="card-head-actions">
+              <button class="btn ghost sm" id="btn-plug-engine">同步引擎清单</button>
+              <button class="btn ghost sm" id="btn-plug-url">从地址导入</button>
+              <button class="btn primary sm" id="btn-plug-zip">导入本地 zip</button>
+              <input type="file" id="plug-file" accept=".zip" hidden>
+            </div>
+          </div>
+          <div class="status-grid" id="plug-meta"></div>
+          <p class="hint" id="plug-support"></p>
+          <div id="plug-list" class="mod-list"></div>
+          <p class="fine">
+            这份目录<strong>随启动器一起用 git 管理</strong>（<span class="mono" id="plug-file-path"></span>），
+            只记录「有什么、适不适合当前引擎、要什么授权、去哪取」——<strong>启动器不托管任何包的字节</strong>。
+            有 release 包的条目直接装作者发布的 zip，并逐个用 sha256 校验；只有源码的条目由启动器从作者仓库取回文件夹，
+            再用引擎自己的 <span class="mono">pack / check</span> 打锁校验。也可以自己导入 zip 或填一个地址。
+          </p>
+          <p class="fine">
+            <strong>插件没有全局启停</strong>：装进 <span class="mono">plugins/</span> 只是就位，
+            实际由<strong>房主在房间里开</strong>（content/cosmetic）或<strong>玩家在设置里给自己开</strong>（ui）；
+            <span class="mono">script</span> / <span class="mono">trusted</span> 两类默认不执行，需要服主设置
+            <span class="mono">SP_PLUGIN_SCRIPTS</span> 并在房间里逐人同意。装好后<strong>不用重启服务器</strong>，下次载入页面引擎就会认到。
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>工坊包源（可安装的包）</h2>
             <div class="card-head-actions">
               <input type="text" id="mod-search" placeholder="搜索名称 / id" spellcheck="false">
             </div>

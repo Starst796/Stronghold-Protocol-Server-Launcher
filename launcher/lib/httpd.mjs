@@ -81,7 +81,10 @@ export function createHttpServer({ getState, actions, logStore, bus }) {
 
 async function api(req, res, url, { getState, actions, logStore }) {
   const route = `${req.method} ${url.pathname}`;
-  const body = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readBody(req) : {};
+  // The config endpoints only ever see small JSON; a plugin zip handed to us by the browser can be tens
+  // of MB, so that one route gets its own ceiling.
+  const limit = url.pathname === '/api/pluginsource/install' ? 64 * 1024 * 1024 : 1024 * 1024;
+  const body = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readBody(req, limit) : {};
   const fail = (msg, code = 400) => sendJson(res, code, { ok: false, error: msg });
 
   switch (route) {
@@ -177,6 +180,15 @@ async function api(req, res, url, { getState, actions, logStore }) {
 
     case 'POST /api/modsource/list':
       return sendJson(res, 200, await actions.modSourceEngineList());
+
+    case 'POST /api/pluginsource':
+      return sendJson(res, 200, await actions.pluginSourceList());
+
+    case 'POST /api/pluginsource/install':
+      return sendJson(res, 200, await actions.pluginSourceInstall(body));
+
+    case 'POST /api/pluginsource/remove':
+      return sendJson(res, 200, await actions.pluginSourceRemove(body));
 
     case 'POST /api/mods/select':
       return sendJson(res, 200, actions.modsSelect(body?.ids));

@@ -7,6 +7,7 @@
 // monitors the server, and keeps it up to date. Closing the console (Ctrl+C) stops both
 // the launcher and the game server it started.
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHttpServer } from './lib/httpd.mjs';
@@ -36,12 +37,18 @@ import {
   MODS_SOURCE, fetchModIndex, modRows, detectModSupport, installMod, removeMod, setModEnabled,
   installedMods, engineModList,
 } from './lib/modsource.mjs';
+import {
+  readCatalog as readPluginCatalog, describeItem, pluginSupport, enginePluginList, pluginStateAll, writePluginState,
+  installFromSource as installPluginFromSource, installFromZip, installFromUrl, removePlugin,
+  installedPlugins, CATALOG_FILE,
+} from './lib/pluginsource.mjs';
 import { checkUpdate, localHistory } from './lib/version.mjs';
 import {
   checkSelf as checkSelfUpdate, applySelf, selfHistory, selfVersion, selfRemote, selfBranch, isSelfRepo,
 } from './lib/selfupdate.mjs';
 import {
   exists, openExternal, openFolder, localAddresses, hasCommand, runCapture, fetchWithTimeout, nowIso, prependPath, gitInstallHint, IS_WIN, IS_MAC, IS_LINUX,
+  displayPath, formatBytes, mkdirp,
 } from './lib/util.mjs';
 
 const LAUNCHER_VERSION = selfVersion() || '1.0.0';
@@ -204,6 +211,7 @@ function buildState() {
       : { slug: MODS_SOURCE.slug, label: MODS_SOURCE.label, count: null },
     modSupport: activeInstall(config) ? detectModSupport(activeInstall(config).dir) : { mode: 'none', reason: '还没有版本。' },
     modInstalled: activeInstall(config) ? installedMods(activeInstall(config).id) : {},
+    pluginSource: pluginSourceState(),
   };
 }
 
@@ -232,6 +240,50 @@ async function ensureModIndex({ force = false } = {}) {
   });
   modIndex = { ...cached, rows: modRows(cached.index) };
   return modIndex;
+}
+
+/** Forget bookkeeping for plugins whose folder is gone. */
+function dropStalePlugins(installId, keepIds) {
+  const all = pluginStateAll();
+  const e = all[installId];
+  if (!e?.items) return;
+  const items = {};
+  for (const id of keepIds) if (e.items[id]) items[id] = e.items[id];
+  writePluginState({ ...all, [installId]: { ...e, items } });
+}
+
+/**
+ * The plugin catalogue as the UI needs it: the shipped list, each row checked against the active
+ * version's engine, plus what the engine itself reports as installed.
+ *
+ * The catalogue is shipped with the launcher (so it is reviewable in git and needs no network), and it
+ * holds no bytes — the packages come from their authors' repositories or from the user.
+ */
+function pluginSourceState() {
+  const doc = readPluginCatalog();
+  const entry = activeInstall(config);
+  if (!entry) {
+    return { available: false, reason: '还没有版本。', catalog: { count: doc.plugins.length, updatedAt: doc.updatedAt, note: doc.note }, items: [] };
+  }
+  const support = pluginSupport(entry.dir);
+  const engine = support.engine || '';
+  // Reconcile the bookkeeping with the filesystem: a folder removed by hand (or by the engine's own
+  // uninstall) must not keep showing as installed. Stale records are dropped so the UI stays honest.
+  const record = installedPlugins(entry.id);
+  const installed = {};
+  let healed = false;
+  for (const [id, rec] of Object.entries(record)) {
+    if (exists(path.join(entry.dir, 'plugins', id))) installed[id] = rec;
+    else healed = true;
+  }
+  if (healed) dropStalePlugins(entry.id, Object.keys(installed));
+  return {
+    available: support.ok,
+    reason: support.reason || '',
+    engine,
+    catalog: { file: displayPath(CATALOG_FILE), count: doc.plugins.length, updatedAt: doc.updatedAt, note: doc.note },
+    items: doc.plugins.map((i) => describeItem(i, { engine, installed })),
+  };
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -861,6 +913,98 @@ const actions = {
     const entry = activeInstall(config);
     if (!entry) return { ok: false, error: '还没有版本。' };
     return { ok: true, ...engineModList(entry) };
+  },
+
+  /** The shipped plugin catalogue plus the engine's own view of what is installed. */
+  async pluginSourceList() {
+    const state = pluginSourceState();
+    const entry = activeInstall(config);
+    const engineList = entry && state.available ? enginePluginList(entry.dir) : null;
+    return { ok: true, ...state, engineList };
+  },
+
+  /**
+   * Install a plugin. Three shapes, one action:
+   *   `{ id }`                  → fetch the folder from the repository recorded in the catalogue
+   *   `{ url }`                 → download a zip the user pointed at, then install it
+   *   `{ zip, name }`           → a zip the user handed us (base64), e.g. from a file picker
+   */
+  async pluginSourceInstall(body = {}) {
+    if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
+    const entry = activeInstall(config);
+    if (!entry) return { started: false, error: '还没有版本。' };
+    const support = pluginSupport(entry.dir);
+    if (!support.ok) return { started: false, error: support.reason };
+
+    const id = String(body.id || '').trim();
+    const url = String(body.url || '').trim();
+    const zipB64 = typeof body.zip === 'string' ? body.zip : '';
+    const item = id ? readPluginCatalog().plugins.map((i) => describeItem(i, { engine: support.engine })).find((i) => i.id === id) : null;
+    if (id && !item) return { started: false, error: '目录里没有这个插件。' };
+    if (item?.manual) return { started: false, error: `${item.name} 不能由启动器安装：${item.manualReason}` };
+    if (!id && !url && !zipB64) return { started: false, error: '请选择一个插件、一个 zip 文件，或一个地址。' };
+    if (url && !/^https:\/\//i.test(url)) return { started: false, error: '地址需要是 https 开头。' };
+
+    let lastPct = -1;
+    const onProgress = (loaded, total, ctx) => {
+      if (!total || total < 1e6) return;
+      const pct = Math.floor((loaded / total) * 100);
+      if (pct >= lastPct + 10) { lastPct = pct; ctx.log(`  ${pct}%（${Math.round(loaded / 1e6)}/${Math.round(total / 1e6)} MB）`, 'stdout'); }
+    };
+
+    const label = item ? `${item.name}（${item.id}）` : (url || body.name || '外部 zip');
+    const steps = [{
+      label: `安装插件：${item?.name || label}`,
+      run: async (ctx) => {
+        if (zipB64) {
+          const safe = String(body.name || 'plugin.zip').replace(/[^\w.\-]+/g, '_').slice(-80) || 'plugin.zip';
+          const tmp = path.join(ROOT, '.cache', 'plugins', safe);
+          mkdirp(path.dirname(tmp));
+          fs.writeFileSync(tmp, Buffer.from(zipB64, 'base64'));
+          ctx.log(`▶ 收到 zip（${formatBytes(fs.statSync(tmp).size)}）`, 'meta');
+          const r = installFromZip(entry, tmp, { log: (l, st) => ctx.log(l, st) });
+          ctx.log('✔ 已安装；下次载入页面时引擎就会认到（无需重启）。', 'stdout');
+          return r;
+        }
+        // Prefer the author's own zip (pinned to a hash we verified) over fetching their whole repo.
+        const target = url || item?.dist?.url;
+        if (target) {
+          const r = await installFromUrl(entry, target, {
+            sha256: item?.dist?.sha256 || (body.sha256 ? String(body.sha256) : ''),
+            expectBytes: item?.dist?.bytes || 0,
+            log: (l, st) => ctx.log(l, st),
+            onProgress: (a, b) => onProgress(a, b, ctx),
+          });
+          ctx.log('✔ 已安装；下次载入页面时引擎就会认到（无需重启）。', 'stdout');
+          return r;
+        }
+        const r = await installPluginFromSource(entry, item, { log: (l, st) => ctx.log(l, st), onProgress: (a, b) => onProgress(a, b, ctx) });
+        if (item.class === 'script' || item.class === 'trusted') {
+          ctx.log('注意：这一类默认不执行，要服主开启（SP_PLUGIN_SCRIPTS）并在房间里逐人同意。', 'meta');
+        } else {
+          ctx.log('✔ 已安装；下次载入页面时引擎就会认到（无需重启）。', 'stdout');
+        }
+        return r;
+      },
+    }];
+    const promise = taskRunner.run('mods', `安装插件：${item?.name || label}`, steps);
+    promise.then(() => { emitState(); });
+    return { started: true, id: item?.id || '', from: zipB64 ? 'zip' : (url ? 'url' : 'source') };
+  },
+
+  /** Remove a plugin this launcher installed. */
+  async pluginSourceRemove(body = {}) {
+    const entry = activeInstall(config);
+    if (!entry) return { ok: false, error: '还没有版本。' };
+    try {
+      const r = removePlugin(entry, String(body.id || ''), {
+        log: (line, stream) => log({ channel: 'mods', stream: stream || 'stdout', line }),
+      });
+      emitState();
+      return { ok: true, ...r };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
   },
 
   /** Adopt an existing folder on disk as a version (for a fork the user already cloned). */
