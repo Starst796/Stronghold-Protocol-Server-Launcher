@@ -413,3 +413,28 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .src-note { margin-top: 5px; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
 .src-note.warn { color: #f0d68a; }
 .src-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; flex-shrink: 0; }
+
+/* ------------------------------------------------------------------ 列表工具条与分页 */
+.list-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  flex-wrap: wrap; margin: 10px 0 4px;
+}
+.list-bar-right { display: flex; align-items: center; gap: 8px; }
+.list-bar input[type="text"] {
+  background: #10161e; border: 1px solid var(--line); color: var(--text);
+  border-radius: 8px; padding: 6px 9px; font-size: 12.5px; min-width: 170px;
+}
+.list-bar select {
+  background: #10161e; border: 1px solid var(--line); color: var(--text);
+  border-radius: 8px; padding: 6px 8px; font-size: 12.5px;
+}
+.pager {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  margin-top: 12px; font-size: 12.5px; color: var(--text-dim);
+}
+.pager button {
+  background: #10161e; border: 1px solid var(--line); color: var(--text);
+  border-radius: 8px; padding: 5px 10px; font-size: 12.5px; cursor: pointer;
+}
+.pager button:hover:not(:disabled) { border-color: var(--accent); color: #b7f0c4; }
+.pager button:disabled { opacity: .4; cursor: default; }

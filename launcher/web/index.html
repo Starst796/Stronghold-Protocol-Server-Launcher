@@ -378,23 +378,23 @@
           <div class="card-head">
             <h2>mod 源</h2>
             <div class="card-head-actions">
-              <button class="btn ghost sm" id="btn-mod-refresh">刷新目录</button>
-              <button class="btn ghost sm" id="btn-mod-engine">引擎里的清单</button>
+              <div class="term-filters" id="src-switch">
+                <button class="chip active" data-src="plugins">插件源</button>
+                <button class="chip" data-src="workshop">工坊包源</button>
+              </div>
             </div>
           </div>
-          <div class="status-grid" id="mod-meta"></div>
           <p class="hint" id="mod-support"></p>
           <p class="fine">
-            源是社区维护的工坊包仓库（<span class="mono" id="mod-slug"></span>），启动器只读取它的
-            <span class="mono">mods/index.json</span> 并按里面的 sha256 校验下载。<strong>本站不托管任何包。</strong>
-            工坊包在 Forge 版本上是原生安装；其它 ≥0.3.0 的版本会经引擎自带的转换器变成插件，
-            只有一部分包能转（改玩法/主题/接口端点那几类不行）。
+            <strong id="src-blurb-title"></strong>
+            <span id="src-blurb"></span>
           </p>
+          <p class="fine" id="src-blurb-extra"></p>
         </div>
 
-        <div class="card">
+        <div class="card src-panel" id="src-panel-plugins">
           <div class="card-head">
-            <h2>插件源（引擎的插件系统）</h2>
+            <h2>插件源 · 引擎的插件系统</h2>
             <div class="card-head-actions">
               <button class="btn ghost sm" id="btn-plug-engine">同步引擎清单</button>
               <button class="btn ghost sm" id="btn-plug-url">从地址导入</button>
@@ -403,8 +403,26 @@
             </div>
           </div>
           <div class="status-grid" id="plug-meta"></div>
-          <p class="hint" id="plug-support"></p>
+          <div class="list-bar">
+            <div class="term-filters" id="plug-filters">
+              <button class="chip active" data-filter="all">全部</button>
+              <button class="chip" data-filter="installed">已装</button>
+              <button class="chip" data-filter="mismatch">不匹配本引擎</button>
+              <button class="chip" data-filter="gated">需服主开启</button>
+              <button class="chip" data-filter="manual">需自行处理</button>
+            </div>
+            <div class="list-bar-right">
+              <input type="text" id="plug-search" placeholder="搜索名称 / id" spellcheck="false">
+              <select id="plug-size">
+                <option value="10">每页 10</option>
+                <option value="20">每页 20</option>
+                <option value="50">每页 50</option>
+                <option value="0">全部</option>
+              </select>
+            </div>
+          </div>
           <div id="plug-list" class="mod-list"></div>
+          <div class="pager" id="plug-pager" hidden></div>
           <p class="fine">
             这份目录<strong>随启动器一起用 git 管理</strong>（<span class="mono" id="plug-file-path"></span>），
             只记录「有什么、适不适合当前引擎、要什么授权、去哪取」——<strong>启动器不托管任何包的字节</strong>。
@@ -419,22 +437,36 @@
           </p>
         </div>
 
-        <div class="card">
+        <div class="card src-panel" id="src-panel-workshop" hidden>
           <div class="card-head">
-            <h2>工坊包源（可安装的包）</h2>
+            <h2>工坊包源 · 社区工坊包仓库</h2>
             <div class="card-head-actions">
-              <input type="text" id="mod-search" placeholder="搜索名称 / id" spellcheck="false">
+              <button class="btn ghost sm" id="btn-mod-refresh">刷新目录</button>
+              <button class="btn ghost sm" id="btn-mod-engine">引擎里的清单</button>
             </div>
           </div>
-          <div class="term-filters" id="mod-filters">
-            <button class="chip active" data-filter="all">全部</button>
-            <button class="chip" data-filter="installed">已装</button>
-            <button class="chip" data-filter="combat">改玩法</button>
-            <button class="chip" data-filter="A">层 A</button>
-            <button class="chip" data-filter="B">层 B</button>
-            <button class="chip" data-filter="C">层 C</button>
+          <div class="status-grid" id="mod-meta"></div>
+          <div class="list-bar">
+            <div class="term-filters" id="mod-filters">
+              <button class="chip active" data-filter="all">全部</button>
+              <button class="chip" data-filter="installed">已装</button>
+              <button class="chip" data-filter="combat">改玩法</button>
+              <button class="chip" data-filter="A">层 A</button>
+              <button class="chip" data-filter="B">层 B</button>
+              <button class="chip" data-filter="C">层 C</button>
+            </div>
+            <div class="list-bar-right">
+              <input type="text" id="mod-search" placeholder="搜索名称 / id" spellcheck="false">
+              <select id="mod-size">
+                <option value="10">每页 10</option>
+                <option value="20">每页 20</option>
+                <option value="50">每页 50</option>
+                <option value="0">全部</option>
+              </select>
+            </div>
           </div>
           <div id="mod-list" class="mod-list"></div>
+          <div class="pager" id="mod-pager" hidden></div>
         </div>
       </section>
 

@@ -160,7 +160,7 @@ function setPage(page) {
   $('#page-title').textContent = PAGE_TITLES[page] || page;
   if (page === 'terminal') scrollTermToEnd(true);
   if (page === 'versions') ensureReleases();
-  if (page === 'modsource') { ensureModSource(); loadPluginSource(); }
+  if (page === 'modsource') setSrcTab(srcTab || defaultSrcTab());
 }
 
 // ------------------------------------------------------------------ toasts & modal
@@ -682,6 +682,7 @@ function render() {
   renderReleaseList();
   renderModSource();
   renderPluginSource();
+  renderSourceSwitch();
   renderAbout();
   renderTaskProgress();
 }
@@ -1053,10 +1054,11 @@ function wire() {
     const c = e.target.closest('.chip');
     if (!c) return;
     modFilter = c.dataset.filter;
+    modPage = 1;
     $$('#mod-filters .chip').forEach((x) => x.classList.toggle('active', x === c));
     renderModSource();
   });
-  $('#mod-search').addEventListener('input', (e) => { modQuery = e.target.value.trim(); renderModSource(); });
+  $('#mod-search').addEventListener('input', (e) => { modQuery = e.target.value.trim(); modPage = 1; renderModSource(); });
   $('#btn-mod-engine').addEventListener('click', async () => {
     try {
       const r = await api('/api/modsource/list', 'POST');
@@ -1084,6 +1086,37 @@ function wire() {
         toast(r.ok ? (r.enabled ? '已启用（重启服务器后生效）' : '已禁用（重启服务器后生效）') : (r.error || '切换失败'), r.ok ? 'ok' : 'error');
       }
     } catch (err) { toast(`${err.message}`, 'error'); }
+  });
+
+  // ---- 源切换与分页
+  $('#src-switch').addEventListener('click', (e) => {
+    const c = e.target.closest('.chip');
+    if (c) setSrcTab(c.dataset.src);
+  });
+  $('#plug-pager').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-pg]');
+    if (!b) return;
+    plugPage += b.dataset.pg === 'next' ? 1 : -1;
+    renderPluginSource();
+    $('#plug-list').scrollIntoView({ block: 'nearest' });
+  });
+  $('#mod-pager').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-pg]');
+    if (!b) return;
+    modPage += b.dataset.pg === 'next' ? 1 : -1;
+    renderModSource();
+    $('#mod-list').scrollIntoView({ block: 'nearest' });
+  });
+  $('#plug-size').addEventListener('change', (e) => { plugPageSize = Number(e.target.value) || 0; plugPage = 1; renderPluginSource(); });
+  $('#mod-size').addEventListener('change', (e) => { modPageSize = Number(e.target.value) || 0; modPage = 1; renderModSource(); });
+  $('#plug-search').addEventListener('input', (e) => { plugQuery = e.target.value.trim(); plugPage = 1; renderPluginSource(); });
+  $('#plug-filters').addEventListener('click', (e) => {
+    const c = e.target.closest('.chip');
+    if (!c) return;
+    plugFilter = c.dataset.filter;
+    plugPage = 1;
+    $$('#plug-filters .chip').forEach((x) => x.classList.toggle('active', x === c));
+    renderPluginSource();
   });
 
   // ---- 插件源
@@ -1298,9 +1331,16 @@ function renderModSource() {
   }
   const busy = S.task.status === 'running';
   const rows = modRows.filter((m) => modVisible(m, inst));
-  if (!rows.length) { host.innerHTML = '<p class="fine">当前筛选下没有条目。</p>'; return; }
+  const mpg = $('#mod-pager');
+  if (!rows.length) {
+    host.innerHTML = '<p class="fine">当前筛选下没有条目。</p>';
+    if (mpg) { mpg.hidden = true; mpg.innerHTML = ''; }
+    return;
+  }
+  const page = paginate(rows, modPage, modPageSize);
+  modPage = page.page;
 
-  host.innerHTML = rows.map((m) => {
+  host.innerHTML = page.slice.map((m) => {
     const have = inst[m.id];
     const canInstall = sup.mode !== 'none';
     const badges = [
@@ -1330,12 +1370,113 @@ function renderModSource() {
       <div class="src-actions">${actions}</div>
     </div>`;
   }).join('');
+  mpg.innerHTML = pagerHtml(page);
+  mpg.hidden = !mpg.innerHTML;
+}
+
+// ------------------------------------------------------------------ 源切换
+const SOURCE_BLURBS = {
+  plugins: {
+    title: '插件源：',
+    blurb: '上游引擎自带的插件系统（0.3.0 起）。这份目录随启动器用 git 管理，只记录「有什么、适不适合当前引擎、要什么授权、去哪取」——启动器不托管任何包的字节。',
+    extra: '有 release 包的条目直接装作者发布的 zip，并逐个用 sha256 校验；只有源码的条目由启动器从作者仓库取回文件夹，再用引擎自己的 pack / check 打锁校验。也可以自己导入 zip 或填一个地址。插件装好即生效（不用重启），但没有全局启停：content / cosmetic 由房主在房间里开，ui 由玩家自己开，script / trusted 默认不执行。',
+  },
+  workshop: {
+    title: '工坊包源：',
+    blurb: '社区维护的工坊包仓库，启动器只读它的 mods/index.json 并按里面的 sha256 校验下载。本站不托管任何包。',
+    extra: '工坊包在 Forge 版本上是原生安装、全部条目可用；其它 ≥0.3.0 的版本会经引擎自带的转换器变成插件，只有一部分包能转（改玩法开关、纯主题、接口端点那几类不行）。工坊包装好后需要重启服务器。',
+  },
+};
+
+/** Which tab to show when the user has not chosen one: whichever the active version supports. */
+function defaultSrcTab() {
+  const ps = S?.pluginSource || {};
+  const ms = S?.modSupport || {};
+  if (ps.available && ms.mode === 'none') return 'plugins';
+  if (!ps.available && ms.mode !== 'none') return 'workshop';
+  return 'plugins';
+}
+
+/** Each source's entry count rides on its chip, so the switch also says how much is behind it. */
+function setSrcCounts() {
+  const map = {
+    plugins: plugItems.length || S?.pluginSource?.catalog?.count || 0,
+    workshop: modRows.length || S?.modSource?.count || 0,
+  };
+  $$('#src-switch .chip').forEach((c) => {
+    const label = c.dataset.src === 'plugins' ? '插件源' : '工坊包源';
+    const n = map[c.dataset.src] || 0;
+    c.textContent = n ? `${label} ${n}` : label;
+  });
+}
+
+function renderSourceSwitch() {
+  const tab = srcTab || defaultSrcTab();
+  srcTab = tab;
+  $$('#src-switch .chip').forEach((c) => c.classList.toggle('active', c.dataset.src === tab));
+  $$('.src-panel').forEach((el) => { el.hidden = el.id !== `src-panel-${tab}`; });
+  const b = SOURCE_BLURBS[tab];
+  if ($('#src-blurb-title')) $('#src-blurb-title').textContent = b.title;
+  if ($('#src-blurb')) $('#src-blurb').textContent = b.blurb;
+  if ($('#src-blurb-extra')) $('#src-blurb-extra').textContent = b.extra;
+  // The hint line belongs to the tab that is showing.
+  const sup = $('#mod-support');
+  if (sup) {
+    if (tab === 'plugins') {
+      const ps = S?.pluginSource || {};
+      sup.textContent = ps.available ? (elasticHint(plugEngine) || '插件系统就绪。') : (ps.reason || '插件需要引擎 0.3.0 及以上。');
+      sup.className = ps.available ? 'hint' : 'hint warn';
+    } else {
+      const ms = S?.modSupport || {};
+      sup.textContent = ms.reason || '';
+      sup.className = ms.mode === 'none' ? 'hint warn' : 'hint';
+    }
+  }
+  setSrcCounts();
+}
+
+/** Switch tabs, loading that source's data if it has not been read yet. */
+function setSrcTab(tab) {
+  srcTab = tab;
+  try { localStorage.setItem('sp.srcTab', tab); } catch { /* ignore */ }
+  renderSourceSwitch();
+  if (tab === 'plugins') loadPluginSource(); else ensureModSource();
 }
 
 // ------------------------------------------------------------------ 插件源
 let plugItems = [];
 /** The engine's own list, kept out of `S` because the SSE state does not carry it and would blank it. */
 let plugEngine = null;
+let plugFilter = 'all';
+let plugQuery = '';
+let plugPage = 1;
+let plugPageSize = 10;
+let modPage = 1;
+let modPageSize = 10;
+
+/** Which content source the「mod 源」page shows: `plugins` or `workshop`. */
+let srcTab = (() => { try { return localStorage.getItem('sp.srcTab') || ''; } catch { return ''; } })();
+
+// ------------------------------------------------------------------ 列表分页
+/**
+ * One page of `items`. `size === 0` means "all" and yields a single page, so the pager can stay hidden
+ * without every caller special-casing it.
+ */
+function paginate(items, page, size) {
+  const total = items.length;
+  const pages = size > 0 ? Math.max(1, Math.ceil(total / size)) : 1;
+  const cur = Math.min(Math.max(1, page), pages);
+  const from = size > 0 ? (cur - 1) * size : 0;
+  const slice = size > 0 ? items.slice(from, from + size) : items;
+  return { slice, page: cur, pages, size, total, from: total ? from + 1 : 0, to: from + slice.length };
+}
+
+function pagerHtml(p) {
+  if (p.size === 0 || p.total <= p.size) return '';
+  return `<button data-pg="prev" ${p.page <= 1 ? 'disabled' : ''}>上一页</button>
+    <span>第 ${p.page} / ${p.pages} 页 · 共 ${p.total} 条（${p.from}–${p.to}）</span>
+    <button data-pg="next" ${p.page >= p.pages ? 'disabled' : ''}>下一页</button>`;
+}
 
 async function loadPluginSource() {
   const host = $('#plug-list');
@@ -1366,19 +1507,33 @@ function renderPluginSource() {
     ['引擎已认到', el?.ok ? `${(el.plugins || []).filter((p) => p.status === 'loaded').length} 个已装载` : '—', ''],
   ].map(([k, v, cls]) => `<div class="status-item"><span class="k">${escapeHtml(k)}</span><span class="v ${cls}">${escapeHtml(String(v))}</span></div>`).join('');
 
-  const sup = $('#plug-support');
-  sup.textContent = ps.available
-    ? (elasticHint(el) || '')
-    : (ps.reason || '插件需要引擎 0.3.0 及以上。');
-  sup.className = ps.available ? 'hint' : 'hint warn';
-
   const busy = S.task.status === 'running';
+  const pg0 = $('#plug-pager');
   if (!plugItems.length) {
     host.innerHTML = '<p class="fine">目录为空或还没读取。</p>';
+    if (pg0) { pg0.hidden = true; pg0.innerHTML = ''; }
+    return;
+  }
+  const shown = plugItems.filter((it) => {
+    if (plugFilter === 'installed' && !it.installed) return false;
+    if (plugFilter === 'mismatch' && it.appVerdict !== 'bad') return false;
+    if (plugFilter === 'gated' && !['script', 'trusted'].includes(it.class)) return false;
+    if (plugFilter === 'manual' && !it.manual) return false;
+    if (plugQuery) {
+      const q = plugQuery.toLowerCase();
+      if (!(it.id.toLowerCase().includes(q) || it.name.toLowerCase().includes(q))) return false;
+    }
+    return true;
+  });
+  const page = paginate(shown, plugPage, plugPageSize);
+  plugPage = page.page;
+  if (!shown.length) {
+    host.innerHTML = '<p class="fine">当前筛选下没有条目。</p>';
+    if (pg0) { pg0.hidden = true; pg0.innerHTML = ''; }
     return;
   }
   const scopeText = (it) => (it.scope || []).map((x) => ({ room: '房间（房主开）', personal: '个人（自己开）', server: '服务端（需授权）' }[x] || x)).join('、') || '—';
-  host.innerHTML = plugItems.map((it) => {
+  host.innerHTML = page.slice.map((it) => {
     const have = it.installed;
     const verdict = it.appVerdict === 'ok' ? '<span class="badge badge-ok">与本引擎匹配</span>'
       : it.appVerdict === 'bad' ? `<span class="badge badge-warn">不匹配本引擎（需要 ${escapeHtml(it.app)}）</span>`
@@ -1420,6 +1575,8 @@ function renderPluginSource() {
       <div class="src-actions">${actions}</div>
     </div>`;
   }).join('');
+  pg0.innerHTML = pagerHtml(page);
+  pg0.hidden = !pg0.innerHTML;
 }
 
 /** A one-line summary of what the engine reported, when it reported anything. */
