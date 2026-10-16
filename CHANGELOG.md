@@ -1,5 +1,67 @@
 # 更新记录
 
+## 1.3.0 — 2026-10-17
+
+两个新的版本来源：**从 Release 安装**（不需要 git，也不需要 npm）与 **mod 源**（社区工坊包仓库）。
+
+### 新增
+
+- **从 Release 安装**（`launcher/lib/releases.mjs`）：「版本」页可按来源（上游 `sganggs/Stronghold-Protocol`、Forge
+  `XiaMo233M/Stronghold-Protocol-Forge`）列出 Releases，并挑一个资产安装。
+  - **不需要 git，也不需要 npm**：实测发布包里 `node_modules`（36 个包 / 84 MB）与 `public/vendor` 是现成的，
+    装完只做「接入共享素材 → `tools/setup.mjs`」。
+  - 资产会分类并标注能否单独安装：**源码包 / 精简包**（推荐，配合共享区只多下约 25 MB）、**完整包**（自带素材）、
+    以及不可单独安装的 **增量更新包 / 语音包 / 素材包 / Windows 便携整合包**（后者自带 Node 与启动脚本，不经启动器管理）。
+  - 包结构不同也能装：上游把内容包在 `Stronghold-Protocol/` 里，Forge 的源码包平铺在 zip 根。启动器解压后**按
+    `package.json` + `tools/setup.mjs` 找源码根**，再把它放进版本目录，所以两种布局都不需要特判。
+  - 更新按 **tag** 比对，下载同类型资产后解压覆盖，**依赖 / 素材链接 / 已装 mod / 服务器状态都会保留**。
+  - GitHub API 走 gh-proxy 镜像；**限流或读不到时退回用 git 标签推断**列表（界面上会说明，此时不显示大小）。
+- **mod 源**（`launcher/lib/modsource.mjs`）：读社区工坊包仓库 `XiaMo233M/Stronghold-Protocol-Forge-Mods` 的
+  `mods/index.json`，按 sha256 校验后交给引擎安装。**启动器不托管也不分发任何包。**
+  - 按当前版本自动选装法：**Forge 版本** → 引擎原生的 `workshop/<id>/`（30 个商店条目全部可用，可启停）；
+    **上游 / 其它 ≥0.3.0** → `tools/plugin.mjs import-forge` 转成 `plugins/<id>/`（实测约 1/3 的条目可转）；
+    **< 0.3.0** → 明确提示装不了。
+  - 转不动时把**引擎自己的原因**原样给出（例如 `pack.json:behaviour` 是引擎写死的行为开关、`client.theme` 只有主题），
+    而不是笼统失败。带 Spine 的素材包目前会被引擎的转换器拒绝（`plugin.lock.json has no clip data`），也已如实转达。
+  - 卸载走各自的正规路径：工坊包交给引擎登记册（挪进 `workshop/.mod-backups/`，**不是删除**），插件删除导入报告里的目录。
+    只有启动器装过的才能从界面卸载（记账在 `.cache/modsource-state.json`，不写进版本目录，因此不会弄脏 `git status`）。
+  - 目录缓存半小时；下载跟随「下载源」，并带**停滞看门狗**。
+- **无依赖的 zip 读取**（`launcher/lib/zip.mjs`）：Windows 没有 `unzip`，Linux 的 GNU tar 又不认 zip（`bsdtar`
+  才行），所以解压不能靠外部命令。按偏移读中央目录、逐条目 `zlib.inflateRawSync`，900 MB 的包也不必整个读进内存；
+  解析 Zip64、校验路径（无绝对路径 / `..` / 盘符 / 反斜杠）。实测上游 `-lite.zip`：7432 条与 Python 完全一致。
+
+### 修复
+
+- **`downloadFile` 在正文阶段没有超时**：定时器在响应头到达后就被清掉，于是「回了头就不再发数据」的主机会让它
+  **永远挂住**。实测表现为一个 4 KB 的 mod 下载耗掉一两分钟。现在有两个期限：`timeout` 管首字节，`idle` 管传输中途
+  停滞（每个数据块重置），因此既不会误杀慢而正常的大文件，也不会让死连接拖下去。
+- **`coerceInstall` 会把新字段吃掉**：版本注册表的条目走白名单规范化，`source` / `sourceUrl` / `release` 被静默丢弃，
+  于是「从 Release 安装」的版本在下一步部署时**退回了 git 克隆**（日志里能看到"未使用 git…改用压缩包下载"，
+  实际却克隆了一遍），而且更新信息也没了。现在这三个字段会保留（`release` 还会校验资产地址必须是 https）。
+- **mod 索引只在内存里**：重启后要等页面先加载一次才能安装。改为懒加载 + 读磁盘缓存，并在启动后台读一次。
+
+### 变更
+
+- mod 源、素材、fork 克隆现在共用同一套「跟随下载源」的镜像顺序。实测同一个 6.6 MB 的包从约 20 秒降到 4 秒
+  （原先是先撞一次直连的慢连接）。
+- 导航新增「mod 源」，显示条目数；旧的「模组」页早已隐藏，`mods.mjs` 代码保留。
+
+### 验证
+
+- `zip.mjs`：合成包（stored + deflate + 嵌套 + 中文名 + 目录项）× 真实上游 `-lite.zip`（7432 条与 Python 一致、
+  包装层识别为 `Stronghold-Protocol`、6839 个文件 / 110 MB 解出）。
+- 列表与分类：上游 13 个 release、Forge 30 个 release，资产分类与默认选择逐条核对；`-update.zip`（便携包增量）
+  与 `-voices-*.zip` 被正确标为不可单独安装。
+- 端到端（隔离根目录，走 HTTP）：从 Release 装上游 v0.3.0（下载 25 MB → 解出 6839 文件 → 包装层剥掉 →
+  目录含 `package.json` / `tools/setup.mjs` / `tools/plugin.mjs`）→ 素材接入共享区 → 检查更新显示 `equal`。
+- 从 Release 装 Forge v0.19.0-0.3.0（平铺源码包，2293 个文件）→ mod 源自动切到「工坊包（原生）」。
+- mod 源：插件路线装 `skin-catalogue`（转换成功 + 跳过 5 个非内容文件）、工坊路线装 `shop-bond-bias`
+  （引擎报 `VALID`）、卸载两条路径、以及不可转换条目的可读报错（`theme-night`：只有主题）。
+- 停滞看门狗：用一个「发了响应头就沉默」的本地服务器验证，3 秒按预期放弃（`AbortError`）。
+- 浏览器实测：Release 卡片（来源切换、自动列出、资产按钮带体积、不可安装项灰显）、mod 源页（支持方式、
+  条目数徽章、筛选与搜索、徽章"改玩法 / 含素材"、备注、安装后按钮变「卸载」）、以及两条安装路径的实际落地。
+- 全程未改动用户既有安装与配置。
+
 ## 1.2.1 — 2026-10-14
 
 克隆/更新 fork 时**跟随当前下载源**（可用镜像），并让版本更新不再空转。

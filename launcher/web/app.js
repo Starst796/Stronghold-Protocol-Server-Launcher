@@ -150,7 +150,7 @@ function renderMarkdown(md) {
 }
 
 // ------------------------------------------------------------------ navigation
-const PAGE_TITLES = { home: '主界面', config: '配置', versions: '版本', terminal: '终端', about: '关于' };
+const PAGE_TITLES = { home: '主界面', config: '配置', versions: '版本', modsource: 'mod 源', terminal: '终端', about: '关于' };
 let currentPage = 'home';
 
 function setPage(page) {
@@ -159,6 +159,8 @@ function setPage(page) {
   $$('.page').forEach((p) => p.classList.toggle('active', p.id === `page-${page}`));
   $('#page-title').textContent = PAGE_TITLES[page] || page;
   if (page === 'terminal') scrollTermToEnd(true);
+  if (page === 'versions') ensureReleases();
+  if (page === 'modsource') ensureModSource();
 }
 
 // ------------------------------------------------------------------ toasts & modal
@@ -677,6 +679,8 @@ function render() {
   renderSelf();
   renderConfig();
   renderVersions();
+  renderReleaseList();
+  renderModSource();
   renderAbout();
   renderTaskProgress();
 }
@@ -1024,6 +1028,63 @@ function wire() {
     if (!atBottom && autoScroll) { autoScroll = false; $('#term-autoscroll').checked = false; }
   });
 
+  // ---- 版本源（Releases）
+  $('#rel-source').addEventListener('change', () => { ensureReleases(); });
+  $('#btn-rel-refresh').addEventListener('click', () => { ensureReleases(true); });
+  $('#rel-list').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-act="rel-install"]');
+    if (!b) return;
+    const tag = b.dataset.tag;
+    const assetName = b.dataset.asset;
+    const label = relSource()?.label || '';
+    if (!confirm(`从 Release 安装 ${tag}\n\n${assetName}\n\n会下载并解压，然后设为当前版本。继续？`)) return;
+    b.disabled = true;
+    try {
+      const r = await api('/api/installs/add-release', 'POST', { sourceId: relSourceId(), tag, assetName, label });
+      if (r.started) toast('已开始安装，可在「终端」看进度', 'ok');
+      else { toast(r.error || '无法安装', 'error'); b.disabled = false; }
+    } catch (err) { toast(`安装失败：${err.message}`, 'error'); b.disabled = false; }
+  });
+
+  // ---- mod 源
+  $('#btn-mod-refresh').addEventListener('click', () => ensureModSource(true));
+  $('#mod-filters').addEventListener('click', (e) => {
+    const c = e.target.closest('.chip');
+    if (!c) return;
+    modFilter = c.dataset.filter;
+    $$('#mod-filters .chip').forEach((x) => x.classList.toggle('active', x === c));
+    renderModSource();
+  });
+  $('#mod-search').addEventListener('input', (e) => { modQuery = e.target.value.trim(); renderModSource(); });
+  $('#btn-mod-engine').addEventListener('click', async () => {
+    try {
+      const r = await api('/api/modsource/list', 'POST');
+      if (!r.ok) return toast(r.error || '读取失败', 'error');
+      toast(`${r.mode === 'workshop' ? '工坊包' : '插件'}清单已输出到「终端」`, 'ok');
+      for (const line of (r.output || [])) termAppend({ channel: 'mods', stream: 'stdout', line });
+    } catch (e) { toast(e.message, 'error'); }
+  });
+  $('#mod-list').addEventListener('click', async (e) => {
+    const t = e.target.closest('[data-act]');
+    if (!t) return;
+    const act = t.dataset.act;
+    const id = t.dataset.id;
+    try {
+      if (act === 'mod-install') {
+        t.disabled = true;
+        const r = await api('/api/modsource/install', 'POST', { id });
+        if (r.started) toast(`已开始安装 ${id}`, 'ok'); else { toast(r.error || '无法安装', 'error'); t.disabled = false; }
+      } else if (act === 'mod-remove') {
+        if (!confirm(`卸载 ${id}？\n\n工坊包会由引擎留一份备份（.mod-backups），插件则直接删除。`)) return;
+        const r = await api('/api/modsource/remove', 'POST', { id });
+        toast(r.ok ? '已卸载' : (r.error || '卸载失败'), r.ok ? 'ok' : 'error');
+      } else if (act === 'mod-toggle') {
+        const r = await api('/api/modsource/toggle', 'POST', { id, enabled: t.dataset.enabled === 'true' });
+        toast(r.ok ? (r.enabled ? '已启用（重启服务器后生效）' : '已禁用（重启服务器后生效）') : (r.error || '切换失败'), r.ok ? 'ok' : 'error');
+      }
+    } catch (err) { toast(`${err.message}`, 'error'); }
+  });
+
   // ---- git notice banner
   $('#git-notice-copy').addEventListener('click', () => {
     const el = $('#git-notice');
@@ -1039,6 +1100,176 @@ function wire() {
   });
 
   window.addEventListener('beforeunload', () => {});
+}
+
+// ------------------------------------------------------------------ 版本源（Releases）
+let relList = {};               // { [sourceId]: { releases, viaApi, error, fetchedAt } }
+const relLoading = new Set();
+
+function relSourceId() { return $('#rel-source')?.value || (S?.releaseSources?.[0]?.id ?? 'upstream'); }
+function relSource() { return (S?.releaseSources || []).find((x) => x.id === relSourceId()) || null; }
+
+/** Load one source's release list, once per session unless forced. */
+async function ensureReleases(force = false) {
+  const id = relSourceId();
+  if (!force && relList[id]) return;
+  if (relLoading.has(id)) return;
+  relLoading.add(id);
+  $('#rel-note').textContent = '正在读取版本列表…';
+  try {
+    const r = await api('/api/releases', 'POST', { sourceId: id, force });
+    relList[id] = r;
+    $('#rel-note').textContent = r.viaApi === false
+      ? `GitHub API 不可用（${r.error || '未知原因'}），下面这份列表是按 git 标签推断的，大小未知。`
+      : `共 ${r.releases.length} 个版本，读取于 ${new Date(r.fetchedAt).toLocaleTimeString()}。`;
+  } catch (e) {
+    $('#rel-note').textContent = `读取失败：${e.message}`;
+  } finally {
+    relLoading.delete(id);
+    renderReleaseList();
+  }
+}
+
+function renderReleaseList() {
+  const host = $('#rel-list');
+  if (!host) return;
+  const sel = $('#rel-source');
+  const sources = S?.releaseSources || [];
+  if (sel && sel.options.length !== sources.length) {
+    sel.innerHTML = sources.map((x) => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.label)}</option>`).join('');
+  }
+  const src = relSource();
+  const data = relList[relSourceId()];
+  if (!data) {
+    host.innerHTML = '<p class="fine">还没有读取版本列表 —— 点右上角「刷新列表」。</p>';
+    return;
+  }
+  if (!data.releases?.length) {
+    host.innerHTML = '<p class="fine">这个来源没有可用版本。</p>';
+    return;
+  }
+  const busy = S.task.status === 'running';
+  host.innerHTML = data.releases.map((rel) => {
+    const badges = [
+      `<span class="badge">${escapeHtml(rel.publishedAt ? rel.publishedAt.slice(0, 10) : '—')}</span>`,
+      rel.upstream ? `<span class="badge">基于上游 ${escapeHtml(rel.upstream)}</span>` : '',
+      rel.prerelease ? '<span class="badge badge-warn">预发布</span>' : '',
+    ].join('');
+    const usable = (rel.assets || []).filter((a) => a.usable);
+    const rest = (rel.assets || []).filter((a) => !a.usable);
+    const buttons = usable.map((a) => `<button class="btn primary sm" data-act="rel-install" data-tag="${escapeHtml(rel.tag)}" data-asset="${escapeHtml(a.name)}" ${busy ? 'disabled' : ''}>安装 ${escapeHtml(a.label)}${a.size ? ` · ${fmtBytes(a.size)}` : ''}</button>`).join('');
+    const dim = rest.map((a) => `<span class="badge" title="${escapeHtml(a.hint)}">${escapeHtml(a.label)}（不可单独安装）</span>`).join('');
+    return `<div class="src-item">
+      <div class="src-main">
+        <div class="src-title">${escapeHtml(rel.tag)}${badges}</div>
+        <div class="src-sub">${src ? escapeHtml(src.desc) : ''}</div>
+        ${rest.length ? `<div class="src-note">${dim}</div>` : ''}
+        ${rel.notes ? `<details class="src-note"><summary>发布说明</summary><pre style="white-space:pre-wrap;margin:6px 0 0">${escapeHtml(rel.notes.slice(0, 1500))}</pre></details>` : ''}
+      </div>
+      <div class="src-actions">${buttons || '<span class="badge">没有可安装的文件</span>'}</div>
+    </div>`;
+  }).join('');
+}
+
+// ------------------------------------------------------------------ mod 源
+let modRows = [];
+let modFilter = 'all';
+let modQuery = '';
+let modLoading = false;
+let engineListShown = false;
+
+function modVisible(m, inst) {
+  if (modFilter === 'installed' && !inst[m.id]) return false;
+  if (modFilter === 'combat' && !m.combat) return false;
+  if (['A', 'B', 'C'].includes(modFilter) && m.layer !== modFilter) return false;
+  if (modQuery) {
+    const q = modQuery.toLowerCase();
+    if (!(m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q))) return false;
+  }
+  return true;
+}
+
+async function ensureModSource(force = false) {
+  if (modRows.length && !force) return;
+  if (modLoading) return;
+  modLoading = true;
+  try {
+    const r = await api('/api/modsource', 'POST', { force });
+    modRows = r.rows || [];
+  } catch (e) {
+    toast(`读取 mod 源失败：${e.message}`, 'error');
+  } finally {
+    modLoading = false;
+    renderModSource();
+  }
+}
+
+function renderModSource() {
+  const host = $('#mod-list');
+  if (!host) return;
+  const info = S?.modSource || {};
+  const sup = S?.modSupport || {};
+  const inst = S?.modInstalled || {};
+  if ($('#mod-slug')) $('#mod-slug').textContent = info.slug || '';
+
+  const pill = $('#nav-modsource');
+  if (pill) {
+    const n = modRows.length || info.count || 0;
+    pill.hidden = !n;
+    pill.textContent = n ? String(n) : '';
+  }
+
+  $('#mod-meta').innerHTML = [
+    ['来源', info.label || '—', ''],
+    ['条目', modRows.length ? String(modRows.length) : (info.count ?? '未读取'), ''],
+    ['当前版本的支持方式', { workshop: '工坊包（原生）', plugin: '插件（经转换）', none: '不支持' }[sup.mode] || '—',
+      sup.mode === 'workshop' ? 'ok' : (sup.mode === 'plugin' ? 'warn' : 'warn')],
+    ['引擎版本', sup.engine || '—', ''],
+    ['目录里的引擎版本', info.engine?.appVersion || '—', ''],
+  ].map(([k, v, cls]) => `<div class="status-item"><span class="k">${escapeHtml(k)}</span><span class="v ${cls}">${escapeHtml(String(v))}</span></div>`).join('');
+
+  const supEl = $('#mod-support');
+  supEl.textContent = sup.reason || '';
+  supEl.className = sup.mode === 'none' ? 'hint warn' : 'hint';
+
+  if (!modRows.length) {
+    host.innerHTML = `<p class="fine">${modLoading ? '正在读取目录…' : '还没有目录 —— 点右上角「刷新目录」。'}</p>`;
+    return;
+  }
+  const busy = S.task.status === 'running';
+  const rows = modRows.filter((m) => modVisible(m, inst));
+  if (!rows.length) { host.innerHTML = '<p class="fine">当前筛选下没有条目。</p>'; return; }
+
+  host.innerHTML = rows.map((m) => {
+    const have = inst[m.id];
+    const canInstall = sup.mode !== 'none';
+    const badges = [
+      `<span class="badge">v${escapeHtml(m.version)}</span>`,
+      m.layer ? `<span class="badge">层 ${escapeHtml(m.layer)}</span>` : '',
+      m.combat ? '<span class="badge badge-warn">改玩法</span>' : '',
+      m.assetFree ? '' : '<span class="badge badge-warn">含素材</span>',
+      have ? `<span class="badge badge-ok">已装（${have.mode === 'workshop' ? '工坊包' : '插件'}）</span>` : '',
+      have && have.enabled === false ? '<span class="badge">已禁用</span>' : '',
+    ].join('');
+    const loads = m.loadErrors.length ? `<div class="src-note warn">引擎装载时报错：${escapeHtml(m.loadErrors.join('；').slice(0, 200))}</div>` : '';
+    const notes = (m.notes || []).map((n) => `<div class="src-note${/⚠|超过|拒收/.test(n) ? ' warn' : ''}">${escapeHtml(n)}</div>`).join('');
+    const actions = [
+      have
+        ? `<button class="btn ghost sm" data-act="mod-remove" data-id="${escapeHtml(m.id)}" ${busy ? 'disabled' : ''}>卸载</button>`
+        : `<button class="btn primary sm" data-act="mod-install" data-id="${escapeHtml(m.id)}" ${busy || !canInstall ? 'disabled' : ''}>安装</button>`,
+      (have && have.mode === 'workshop')
+        ? `<button class="btn ghost sm" data-act="mod-toggle" data-id="${escapeHtml(m.id)}" data-enabled="${have.enabled === false}" ${busy ? 'disabled' : ''}>${have.enabled === false ? '启用' : '禁用'}</button>`
+        : '',
+    ].join('');
+    return `<div class="src-item">
+      <div class="src-main">
+        <div class="src-title">${escapeHtml(m.name)}${badges}</div>
+        <div class="src-sub">${escapeHtml(m.id)} · ${fmtBytes(m.size)} · ${m.files || '?'} 个文件</div>
+        ${notes}${loads}
+      </div>
+      <div class="src-actions">${actions}</div>
+    </div>`;
+  }).join('');
 }
 
 // ------------------------------------------------------------------ boot

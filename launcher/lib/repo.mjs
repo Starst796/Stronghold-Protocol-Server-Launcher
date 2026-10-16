@@ -168,11 +168,19 @@ export function parseChangelog(dir) {
   return sections;
 }
 
-/** Download a URL to a file, reporting progress through `onProgress(loaded, total)`. */
-export async function downloadFile(url, dest, { onProgress, timeout = 30000 } = {}) {
+/**
+ * Download a URL to a file, reporting progress through `onProgress(loaded, total)`.
+ *
+ * Two deadlines, because one is not enough for a big file: `timeout` bounds the wait for the response
+ * headers, and `idle` bounds a stall in the middle of the body. The timer used to be cleared as soon
+ * as the headers arrived, which left a transfer that stopped sending bytes hanging forever — measured
+ * as a 4 KB download that took minutes because the first host answered and then went quiet.
+ */
+export async function downloadFile(url, dest, { onProgress, timeout = 30000, idle = 30000 } = {}) {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeout);
+  let timer = setTimeout(() => ac.abort(), timeout);
+  const bump = () => { clearTimeout(timer); timer = setTimeout(() => ac.abort(), idle); };
   let res;
   try {
     res = await fetch(url, { signal: ac.signal, redirect: 'follow' });
@@ -180,19 +188,26 @@ export async function downloadFile(url, dest, { onProgress, timeout = 30000 } = 
     clearTimeout(timer);
   }
   if (!res.ok || !res.body) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+  // Arm the stall watchdog before the first byte, so a body that never starts also fails.
+  bump();
   const total = Number(res.headers.get('content-length')) || 0;
   let loaded = 0;
   let lastReport = 0;
   const stream = Readable.fromWeb(res.body);
   stream.on('data', (chunk) => {
     loaded += chunk.length;
+    bump();
     const now = Date.now();
     if (onProgress && (now - lastReport > 500 || loaded === total)) {
       lastReport = now;
       onProgress(loaded, total);
     }
   });
-  await pipeline(stream, fs.createWriteStream(dest));
+  try {
+    await pipeline(stream, fs.createWriteStream(dest));
+  } finally {
+    clearTimeout(timer);
+  }
   onProgress?.(loaded, total || loaded);
   return { bytes: loaded, total };
 }

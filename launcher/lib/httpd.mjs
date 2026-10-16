@@ -157,6 +157,27 @@ async function api(req, res, url, { getState, actions, logStore }) {
     case 'POST /api/installs/relink':
       return sendJson(res, 200, actions.installsRelink());
 
+    case 'POST /api/releases':
+      return sendJson(res, 200, await actions.releasesList(body));
+
+    case 'POST /api/installs/add-release':
+      return sendJson(res, 200, await actions.installsAddRelease(body));
+
+    case 'POST /api/modsource':
+      return sendJson(res, 200, await actions.modSourceRefresh(body));
+
+    case 'POST /api/modsource/install':
+      return sendJson(res, 200, await actions.modSourceInstall(body));
+
+    case 'POST /api/modsource/remove':
+      return sendJson(res, 200, await actions.modSourceRemove(body));
+
+    case 'POST /api/modsource/toggle':
+      return sendJson(res, 200, await actions.modSourceToggle(body));
+
+    case 'POST /api/modsource/list':
+      return sendJson(res, 200, await actions.modSourceEngineList());
+
     case 'POST /api/mods/select':
       return sendJson(res, 200, actions.modsSelect(body?.ids));
 

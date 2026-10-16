@@ -28,6 +28,14 @@ import {
 import {
   fetchCatalog, applyMods, restoreGame, validateSelection,
 } from './lib/mods.mjs';
+import {
+  RELEASE_SOURCES, releaseSourceById, listReleases, defaultAsset, installRelease, updateRelease,
+  checkReleaseUpdate, updateAssetFor, ASSET_KINDS,
+} from './lib/releases.mjs';
+import {
+  MODS_SOURCE, fetchModIndex, modRows, detectModSupport, installMod, removeMod, setModEnabled,
+  installedMods, engineModList,
+} from './lib/modsource.mjs';
 import { checkUpdate, localHistory } from './lib/version.mjs';
 import {
   checkSelf as checkSelfUpdate, applySelf, selfHistory, selfVersion, selfRemote, selfBranch, isSelfRepo,
@@ -127,6 +135,10 @@ let checkingVersion = false;
 /** Per-version update checks, keyed by version id: { state, local, remote, incoming, checkedAt }. */
 let versionChecks = {};
 let checkingInstalls = false;
+/** Release listings per source, kept in memory because `listReleases` also caches on disk. */
+let releaseLists = {};
+/** The community mod repository's index, and the active version's support mode. */
+let modIndex = null;
 
 /** Local snapshot of the launcher's own repo, so the UI can render before any network check. */
 function localSelfInfo() {
@@ -181,6 +193,17 @@ function buildState() {
     presets: allPresets(config),
     sources: SOURCES,
     channels: CHANNELS,
+    releaseSources: RELEASE_SOURCES.map((r) => ({ id: r.id, label: r.label, slug: r.slug, desc: r.desc, recommended: r.recommended })),
+    releases: releaseLists,
+    assetKinds: ASSET_KINDS,
+    modSource: modIndex
+      ? {
+        slug: MODS_SOURCE.slug, label: MODS_SOURCE.label, fetchedAt: modIndex.fetchedAt,
+        count: modIndex.rows.length, engine: modIndex.index?.engine || null, source: modIndex.index?.source || null,
+      }
+      : { slug: MODS_SOURCE.slug, label: MODS_SOURCE.label, count: null },
+    modSupport: activeInstall(config) ? detectModSupport(activeInstall(config).dir) : { mode: 'none', reason: '还没有版本。' },
+    modInstalled: activeInstall(config) ? installedMods(activeInstall(config).id) : {},
   };
 }
 
@@ -193,6 +216,22 @@ function uniqueInstallId(cfg, base) {
   if (!taken.has(base)) return base;
   for (let i = 2; i < 100; i++) if (!taken.has(`${base}-${i}`)) return `${base}-${i}`;
   return `${base}-${Date.now().toString(36)}`;
+}
+
+/**
+ * The mod source index, read from its on-disk cache when it is still fresh. Keeping this lazy means a
+ * restart does not force a network round trip, and an action never fails just because the page that
+ * normally loads the index was not opened first.
+ */
+async function ensureModIndex({ force = false } = {}) {
+  if (modIndex && !force) return modIndex;
+  const cached = await fetchModIndex({
+    force,
+    cfg: config,
+    log: (line, stream) => log({ channel: 'mods', stream: stream || 'meta', line }),
+  });
+  modIndex = { ...cached, rows: modRows(cached.index) };
+  return modIndex;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -305,6 +344,15 @@ function ensureSources(ctx) {
   const dir = entry.dir;
   if (exists(path.join(dir, 'package.json'))) {
     ctx.log(`目录已存在，跳过下载：${dir}`, 'meta');
+  } else if (entry.source === 'release') {
+    // A version installed from a release has no working copy to clone: unpack the recorded asset.
+    const rec = entry.release || {};
+    if (!rec.assetUrl) throw new Error('这个版本没有记录安装来源（release 资产），请删除后在「版本」页重新添加。');
+    installRelease(cfg, entry, {
+      tag: rec.tag,
+      asset: { name: rec.assetName, url: rec.assetUrl, size: rec.size || 0 },
+      log: (line, stream) => ctx.log(line, stream),
+    });
   } else if (gitCommand() && entry.repo) {
     cloneInstall(dir, entry.repo, entry.ref, { cfg, log: (line, stream) => ctx.log(line, stream) });
   } else {
@@ -578,7 +626,10 @@ const actions = {
     log({ channel: 'update', stream: 'meta', line: `▶ 检查 ${targets.length} 个版本的更新…` });
     try {
       for (const entry of targets) {
-        const r = checkInstallUpdate(entry, config, { log: (line) => log({ channel: 'update', stream: 'stdout', line }) });
+        const logLine = (line) => log({ channel: 'update', stream: 'stdout', line });
+        const r = entry.source === 'release'
+          ? await checkReleaseUpdate(entry, { log: logLine })
+          : checkInstallUpdate(entry, config, { log: logLine });
         versionChecks = { ...versionChecks, [entry.id]: { ...r, checkedAt: nowIso() } };
         const text = {
           equal: '已是最新', behind: `有 ${r.incoming.length || ''} 个新提交可更新`, ahead: '本地领先于远端',
@@ -650,6 +701,166 @@ const actions = {
       toast(r.ok ? `版本「${entry.label}」已安装` : '安装失败，可在「终端」查看原因', r.ok ? 'ok' : 'error', 8000);
     });
     return { started: true, id: entry.id };
+  },
+
+  /**
+   * The releases of one source (`body.sourceId`), newest first. Cached on disk for half an hour by
+   * `listReleases`; `force` re-reads.
+   */
+  async releasesList(body = {}) {
+    const id = String(body.sourceId || 'upstream');
+    const src = releaseSourceById(id);
+    const listed = await listReleases(id, {
+      force: body.force === true,
+      log: (line, stream) => log({ channel: 'deploy', stream: stream || 'meta', line }),
+    });
+    releaseLists = { ...releaseLists, [id]: listed };
+    emitState();
+    return { ok: true, sourceId: id, label: src.label, ...listed };
+  },
+
+  /**
+   * Install a version straight from a GitHub Release. `body = { sourceId, tag, assetName, label }`.
+   *
+   * This is the route for anyone without git, and it is much faster than a clone-and-setup: the
+   * published packages already contain `node_modules` and `public/vendor`, so nothing is installed
+   * afterwards — only the art is linked to the shared store.
+   */
+  async installsAddRelease(body = {}) {
+    if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
+    const id = String(body.sourceId || 'upstream');
+    const src = releaseSourceById(id);
+    let listed = releaseLists[id];
+    if (!listed) {
+      listed = await listReleases(id, { log: (line, stream) => log({ channel: 'deploy', stream: stream || 'meta', line }) });
+      releaseLists = { ...releaseLists, [id]: listed };
+    }
+    const rel = (listed.releases || []).find((r) => r.tag === String(body.tag || ''));
+    if (!rel) return { started: false, error: `找不到 release ${body.tag}（列表可能已过期，请点「刷新」）。` };
+    const asset = body.assetName
+      ? (rel.assets || []).find((a) => a.name === String(body.assetName))
+      : defaultAsset(rel, src);
+    if (!asset) return { started: false, error: '这个 release 里没有找到那个文件。' };
+    if (!asset.usable) {
+      return { started: false, error: `${asset.label}不能单独安装：${asset.hint}` };
+    }
+
+    const slug = src.slug;
+    const newId = uniqueInstallId(config, installIdFor(`https://github.com/${slug}`, rel.tag));
+    const entry = {
+      id: newId,
+      label: String(body.label || '').trim().slice(0, 80) || `${src.label} ${rel.tag}`,
+      kind: id === 'upstream' ? 'upstream' : 'fork',
+      // A release install has no working copy: `source` says how to update it, and `repo` stays empty
+      // so nothing mistakes it for something `git fetch` could handle.
+      source: 'release',
+      repo: '',
+      sourceUrl: `https://github.com/${slug}`,
+      ref: rel.tag,
+      dir: installDirFor(newId),
+      release: {
+        sourceId: id, slug, tag: rel.tag, assetName: asset.name, assetUrl: asset.url,
+        assetKind: asset.kind, size: asset.size,
+      },
+      commit: '', linkMode: '', addedAt: nowIso(),
+    };
+    if (exists(path.join(entry.dir, 'package.json'))) return { started: false, error: `目录已存在：${entry.dir}` };
+    config = patchConfig({ installs: [...(config.installs || []), entry], activeInstallId: entry.id, installDir: entry.dir });
+    log({ channel: 'deploy', stream: 'meta', line: `▶ 从 Release 安装：${entry.label}（${rel.tag} · ${asset.name}）` });
+    const promise = taskRunner.run('deploy', `从 Release 安装：${entry.label}`, deploySteps('full'));
+    promise.then((r) => {
+      refreshInstall();
+      emitState();
+      toast(r.ok ? `版本「${entry.label}」已安装` : '安装失败，可在「终端」查看原因', r.ok ? 'ok' : 'error', 8000);
+    });
+    return { started: true, id: entry.id };
+  },
+
+  /** (Re)read the community mod repository's manifest. */
+  async modSourceRefresh(body = {}) {
+    const idx = await ensureModIndex({ force: body.force === true });
+    log(`✔ mod 源：${idx.rows.length} 个包${idx.cached ? '（来自本地缓存）' : ''}`, 'stdout');
+    emitState();
+    return { ok: true, count: idx.rows.length, cached: idx.cached, fetchedAt: idx.fetchedAt, rows: idx.rows };
+  },
+
+  /** Install one mod from the source into the active version. */
+  async modSourceInstall(body = {}) {
+    if (taskRunner.busy) return { started: false, error: '已有任务正在运行。' };
+    const entry = activeInstall(config);
+    if (!entry) return { started: false, error: '还没有版本，请先在「版本」页安装一个。' };
+    let idx;
+    try {
+      idx = await ensureModIndex();
+    } catch (e) {
+      return { started: false, error: `读取 mod 源失败：${String(e.message || e)}` };
+    }
+    const mod = idx.rows.find((m) => m.id === String(body.id || ''));
+    if (!mod) return { started: false, error: '目录里没有这个包。' };
+    const support = detectModSupport(entry.dir);
+    if (support.mode === 'none') return { started: false, error: support.reason };
+
+    let lastPct = -1;
+    const steps = [{
+      label: `安装 mod：${mod.name}`,
+      run: async (ctx) => {
+        const r = await installMod(config, entry, mod, {
+          log: (line, stream) => ctx.log(line, stream),
+          onProgress: (loaded, total) => {
+            // Tiny packs finish between reports; only a real download is worth a progress line.
+            if (!total || total < 1e6) return;
+            const pct = Math.floor((loaded / total) * 100);
+            if (pct >= lastPct + 10) { lastPct = pct; ctx.log(`  下载 ${pct}%（${Math.round(loaded / 1e6)}/${Math.round(total / 1e6)} MB）`, 'stdout'); }
+          },
+        });
+        const how = r.mode === 'workshop' ? '工坊包' : `插件（${(r.products || []).join('、')}）`;
+        ctx.log(`✔ 已安装为${how}`, 'stdout');
+        if (game.running) ctx.log('提示：服务器正在运行；重启一次「启动服务器」即可生效。', 'meta');
+        return r;
+      },
+    }];
+    const promise = taskRunner.run('mods', `安装 mod：${mod.name}`, steps);
+    promise.then(() => { emitState(); });
+    return { started: true, id: mod.id, mode: support.mode };
+  },
+
+  /** Uninstall a mod this launcher installed (the engine keeps its own backup). */
+  async modSourceRemove(body = {}) {
+    const entry = activeInstall(config);
+    if (!entry) return { ok: false, error: '还没有版本。' };
+    if (game.running) return { ok: false, error: '请先「停止服务器」再卸载 mod。' };
+    try {
+      const r = await removeMod(config, entry, String(body.id || ''), {
+        log: (line, stream) => log({ channel: 'mods', stream: stream || 'stdout', line }),
+      });
+      emitState();
+      toast(r.mode === 'workshop' ? '已卸载（引擎留了备份）' : '已卸载', 'ok', 6000);
+      return { ok: true, mode: r.mode };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  },
+
+  /** Enable / disable an installed workshop pack (the engine's own registry owns the switch). */
+  async modSourceToggle(body = {}) {
+    const entry = activeInstall(config);
+    if (!entry) return { ok: false, error: '还没有版本。' };
+    try {
+      const r = await setModEnabled(config, entry, String(body.id || ''), body.enabled === true, {
+        log: (line, stream) => log({ channel: 'mods', stream: stream || 'stdout', line }),
+      });
+      emitState();
+      return { ok: true, enabled: r.enabled };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
+    }
+  },
+
+  /** The engine's own list of installed mods, for cross-checking. */
+  async modSourceEngineList() {
+    const entry = activeInstall(config);
+    if (!entry) return { ok: false, error: '还没有版本。' };
+    return { ok: true, ...engineModList(entry) };
   },
 
   /** Adopt an existing folder on disk as a version (for a fork the user already cloned). */
@@ -724,8 +935,26 @@ const actions = {
     const steps = [
       {
         label: force ? '更新版本（丢弃该版本的本地改动）' : '更新版本',
-        run: (ctx) => {
-          const r = updateInstall(config, entry, { force, log: (line, stream) => ctx.log(line, stream) });
+        run: async (ctx) => {
+          const lg = (line, stream) => ctx.log(line, stream);
+          if (entry.source === 'release') {
+            // No git here: the update is the newest release's asset of the same kind, unpacked over
+            // the version while dependencies, art and installed mods are preserved.
+            const next = await updateAssetFor(entry, { log: lg });
+            if (!next) throw new Error('找不到可用的更新资产；请删除这个版本后重新安装。');
+            const before = entry.release?.tag || '';
+            changed = next.tag !== before;
+            if (!changed) { ctx.log(`✔ 已是最新（${before}）`, 'stdout'); return; }
+            await updateRelease(config, entry, { tag: next.tag, asset: next.asset, log: lg });
+            config = patchConfig({
+              installs: (config.installs || []).map((e) => (e.id === entry.id
+                ? { ...e, ref: next.tag, release: { ...e.release, tag: next.tag, assetName: next.asset.name, assetUrl: next.asset.url, assetKind: next.asset.kind, size: next.asset.size } }
+                : e)),
+            });
+            if (!resync) ctx.log('已解压新版本；依赖与素材未变，跳过同步（需要时可勾选「即使没有新提交也重新同步」）。', 'meta');
+            return;
+          }
+          const r = updateInstall(config, entry, { force, log: lg });
           changed = r.changed;
           config = patchConfig({ installs: (config.installs || []).map((e) => (e.id === entry.id ? { ...e, commit: r.commit } : e)) });
           if (!r.changed) ctx.log('提交没有变化；已跳过依赖与素材同步（需要时可勾选「即使没有新提交也重新同步」）。', 'meta');
@@ -1045,6 +1274,9 @@ async function main() {
   // comparison is meaningless now that versions can come from different forks).
   if (config.autoUpdateCheck && (config.installs || []).length) {
     setTimeout(() => { actions.installsCheckAll(); }, 800);
+    // Read the mod source's manifest in the background so the mod page has its list ready, and a
+    // restart never makes the first install fail with "目录还没读取".
+    setTimeout(() => { ensureModIndex().then(() => emitState()).catch(() => { /* offline is fine */ }); }, 1200);
   }
 
   process.on('SIGINT', () => { console.log('\n收到 Ctrl+C，正在退出…'); shutdown(0); });

@@ -32,6 +32,11 @@
         <span>版本</span>
         <em class="pill" id="nav-versions" hidden></em>
       </button>
+      <button class="nav-item" data-page="modsource">
+        <svg viewBox="0 0 24 24"><path d="M12 2 2 7v10l10 5 10-5V7L12 2zm0 2.3 7.3 3.6L12 11.5 4.7 7.9 12 4.3zM4 9.6l7 3.5v6.6l-7-3.5V9.6zm9 10.1v-6.6l7-3.5v6.6l-7 3.5z"/></svg>
+        <span>mod 源</span>
+        <em class="pill" id="nav-modsource" hidden></em>
+      </button>
       <button class="nav-item" data-page="terminal">
         <svg viewBox="0 0 24 24"><path d="M3 4h18a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm3.7 5.3L5.3 10.7 8.6 14l-3.3 3.3 1.4 1.4L11.4 14zM12 17h7v-2h-7z"/></svg>
         <span>终端</span>
@@ -330,6 +335,23 @@
         </div>
 
         <div class="card">
+          <div class="card-head">
+            <h2>从 Release 安装（不需要 git）</h2>
+            <div class="card-head-actions">
+              <select id="rel-source"></select>
+              <button class="btn ghost sm" id="btn-rel-refresh">刷新列表</button>
+            </div>
+          </div>
+          <div id="rel-list" class="mod-list"></div>
+          <p class="fine">
+            这里装的是别人打好的版本包，<strong>自带依赖与前端库，装完不用 npm</strong>。
+            推荐选「源码包 / 精简包」：素材会走上面的共享区，只多下载约 25 MB；
+            「完整包」自带素材，但要多下几百 MB。增量更新包与语音包不能单独安装。
+          </p>
+          <p class="fine" id="rel-note"></p>
+        </div>
+
+        <div class="card">
           <div class="card-head"><h2>收纳已下载的目录</h2></div>
           <div class="form-grid">
             <label class="field wide"><span>目录绝对路径（已经 clone 好的 fork）</span>
@@ -347,6 +369,45 @@
         <div class="card">
           <div class="card-head"><h2>共享素材</h2></div>
           <div class="status-grid" id="shared-meta"></div>
+        </div>
+      </section>
+
+      <!-- ============================ mod 源 ============================ -->
+      <section class="page" id="page-modsource">
+        <div class="card">
+          <div class="card-head">
+            <h2>mod 源</h2>
+            <div class="card-head-actions">
+              <button class="btn ghost sm" id="btn-mod-refresh">刷新目录</button>
+              <button class="btn ghost sm" id="btn-mod-engine">引擎里的清单</button>
+            </div>
+          </div>
+          <div class="status-grid" id="mod-meta"></div>
+          <p class="hint" id="mod-support"></p>
+          <p class="fine">
+            源是社区维护的工坊包仓库（<span class="mono" id="mod-slug"></span>），启动器只读取它的
+            <span class="mono">mods/index.json</span> 并按里面的 sha256 校验下载。<strong>本站不托管任何包。</strong>
+            工坊包在 Forge 版本上是原生安装；其它 ≥0.3.0 的版本会经引擎自带的转换器变成插件，
+            只有一部分包能转（改玩法/主题/接口端点那几类不行）。
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>可安装的包</h2>
+            <div class="card-head-actions">
+              <input type="text" id="mod-search" placeholder="搜索名称 / id" spellcheck="false">
+            </div>
+          </div>
+          <div class="term-filters" id="mod-filters">
+            <button class="chip active" data-filter="all">全部</button>
+            <button class="chip" data-filter="installed">已装</button>
+            <button class="chip" data-filter="combat">改玩法</button>
+            <button class="chip" data-filter="A">层 A</button>
+            <button class="chip" data-filter="B">层 B</button>
+            <button class="chip" data-filter="C">层 C</button>
+          </div>
+          <div id="mod-list" class="mod-list"></div>
         </div>
       </section>
 

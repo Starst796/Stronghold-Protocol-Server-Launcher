@@ -273,16 +273,39 @@ function coerceInstall(e, i) {
   const dir = str(e.dir, 500);
   if (!dir || !path.isAbsolute(dir)) return null;
   const kind = e.kind === 'upstream' ? 'upstream' : 'fork';
+  // A version can come from a git remote or from a published release asset; the second has no working
+  // copy, so its install source has to survive normalisation or the next deploy would try to clone it.
+  const isRelease = e.source === 'release';
   return {
     id: str(e.id, 64) || `install-${i + 1}`,
     label: str(e.label, 80) || `版本 ${i + 1}`,
     kind,
+    source: isRelease ? 'release' : '',
+    sourceUrl: str(e.sourceUrl, 300),
+    release: isRelease ? coerceRelease(e.release) : null,
     repo: str(e.repo, 300),
     ref: str(e.ref, 120),
     dir,
     commit: str(e.commit, 40),
     linkMode: str(e.linkMode, 20),
     addedAt: str(e.addedAt, 40),
+  };
+}
+
+/** The recorded release a version was installed from; null when it is unusable. */
+function coerceRelease(r) {
+  if (!isObj(r)) return null;
+  const tag = str(r.tag, 80);
+  const assetUrl = str(r.assetUrl, 500);
+  if (!tag || !/^https:\/\//.test(assetUrl)) return null;
+  return {
+    sourceId: str(r.sourceId, 40),
+    slug: str(r.slug, 120),
+    tag,
+    assetName: str(r.assetName, 200),
+    assetUrl,
+    assetKind: str(r.assetKind, 20),
+    size: Math.max(0, Number(r.size) || 0),
   };
 }
 
