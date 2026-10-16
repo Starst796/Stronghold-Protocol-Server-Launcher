@@ -1,5 +1,61 @@
 # 更新记录
 
+## 1.3.2 — 2026-10-17
+
+**两处只有服务器知道的事，现在启动器先说了**：①为什么「装得上却开不起来」，②`范围 服务端（需授权）`到底怎么配。
+两条结论都来自**实跑引擎自己的代码**（不是读文档）：`shared/plugins/patch.js`、`server/plugins/contentSets.js`、
+`server/plugins/trusted.js`、`server/plugins/policy.js`。
+
+### 新增
+
+- **补丁预检（「需要作者宿主层」）**（`launcher/lib/engineplugins.mjs`）：对每个已就位的 `content` / `script` / `trusted`
+  插件，按引擎的同一套规则静态检查它的 `data/*.json` 补丁能不能落在**当前游戏数据**上——数据表是否存在、
+  每一级父路径是否已存在、数组下标、`set` 的类型是否保持、`add` 的命名空间 id。缺哪一级就直说是哪一级。
+  装了这类插件后，「已在 `plugins/` 里」的条目会多一个「需要作者宿主层」徽章和一句原因，插件源列表也多了
+  「需宿主层」筛选。
+- **为什么这件事值得单独做**：房间启用失败时，引擎只回一句「该插件不能在房间中启用」。原因是
+  `server/plugins/contentSets.js` 对**不认识的错误码一律回落到 `PLUGIN_BLOCKED`** —— 而补丁失败报的是
+  `PLUGIN_PATCH_PATH`，根本不在房间的 `ERR` 表里。真正的原因只在服务端日志的英文 `detail` 里。
+- **服主策略编辑器**：直接读写版本目录里的 `plugins/config.json`（`rooms` / `default` / `allow` / `classes` /
+  `limits.maxSets` / `allowIncompatible` / `allowDownloadHosts`）。**只写我们管的键**，其余键（包括引擎的安装器
+  从同一个文件读的 `allowDownloadHosts` 和将来新增的键）原样保留。界面上还会把这几个键与
+  `SP_PLUGIN_SCRIPTS` 的关系讲清楚：策略**只能关掉环境已经打开的东西**，不能凭空打开。
+- **`SP_PLUGIN_SCRIPTS` 进配置**（`off` / `sandbox` / `trusted` / `trusted-force`）：启动服务器时作为环境变量注入；
+  `off` 时**不设置**该变量，避免从 shell 继承来的值悄悄打开脚本类插件。
+- **受信任插件的一键钉住**：显示插件 `plugin.lock.json` 的 SHA-256（`trusted` 里钉的就是它），可一键写入
+  `config.json` 的 `trusted.<id>` 或取消。lock 与文件不符时**拒绝钉住**并说明要先重新打包 —— 钉一个无效的
+  lock 只会把真正的拒绝藏起来。
+- **四道闸门逐条列出**：模式（`SP_PLUGIN_SCRIPTS`）→ 监听地址（`0.0.0.0` / 公网会被 `PLUGIN_TRUST_PUBLIC` 拒）→
+  lock 与钉住的哈希（`PLUGIN_TRUST_PIN`）→ 房间里每位真人同意。引擎在第一次拒绝就返回，所以它**没走到的闸门
+  标成「未判定」**，不假装通过。
+
+### 实测（拿引擎自己的代码对照，不是自己重写一套规则）
+
+- **补丁预检 vs 引擎的补丁器**：把真实插件（`lele-damage` / `lele-factions` 的作者包）的 `ops` 喂给引擎的
+  `applyPatches()`，得到 `PLUGIN_PATCH_PATH`「path does not exist」；启动器的预检独立指出缺的是
+  **`config.economy.leleHost`** 这一级（这两份插件的补丁只写 `config.economy.leleHost.packages.*`，
+  而任何原生安装都没有 `leleHost` 这个命名空间）。两份插件的 lock 本身有效、引擎 `list` 也报 `content (loaded)` ——
+  所以问题只在「房间里启用」这一步，正是「装得上、开不起来」。
+- **200 组左右的闸门比对**：把我们的闸门模型与引擎的 `trustDecision()` 在
+  `class(script/trusted) × mode(off/sandbox/trusted/trusted-force) × host(127.0.0.1/192.168.x/10.x/0.0.0.0/域名/::1) ×
+  pin(无/正确/错误)` 的 **144 组**组合上逐一比对，**0 处不一致**。
+- **策略文件被引擎接受**：写入后由引擎自己的 `policy.js` `readPolicy()` 读回，`problems` 为空、字段值一致；
+  手工塞进的未知键（`someFutureKey` / `limits.otherLimit` / `trusted.keep-me`）在下次保存后仍保留。
+- **钉住的端到端**：用引擎的 `pack` 给 `spin-bounce`（trusted 类）生成 lock，在界面上钉住，然后用引擎自己的
+  `readScripts()` + `applyTrust()` 判断：
+  - 启动器配置 `SP_PLUGIN_SCRIPTS=trusted` + `host=127.0.0.1` + 已钉住 → 引擎日志 `spin-bounce: loaded`；
+  - 同一个配置把监听换成 `0.0.0.0` → `disabled`，码为 `PLUGIN_TRUST_PUBLIC`（**这正是本机 `launcher.config.json`
+    的 hosts 值，所以界面会直接提示这一条**）。
+
+### 界面
+
+- 插件条目：新增「需要作者宿主层」/「补丁会被拒绝」/「已钉住 lock」徽章，预检原因与闸门清单直接排在条目里；
+  已就位但不是启动器装的插件显示「已在 `plugins/` 里」，并可以「重新安装」或卸载（卸载时如实说明没有备份）。
+- 插件面板底部新增「服主策略」卡片：状态行（策略文件 / 房间可用性 / 脚本模式 / 钉住的 lock / 文件问题）、
+  可编辑字段、六个类别的开关（环境没打开时标 ⚠），以及一句「`SP_PLUGIN_SCRIPTS` 要重启、策略文件不用重启」
+  （引擎按 mtime 重读 `config.json`，但 `SP_PLUGIN_SCRIPTS` 只在启动时读一次）。
+- 「配置」页新增「脚本插件 `SP_PLUGIN_SCRIPTS`」选择项与说明。
+
 ## 1.3.1 — 2026-10-17
 
 **插件源**：把社区已经在发的引擎插件接进来。插件是**上游引擎**自带的能力（0.3.0 起），与「工坊包」互补 —— 后者只有 Forge 有。

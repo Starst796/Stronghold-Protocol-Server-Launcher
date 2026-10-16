@@ -42,6 +42,10 @@ import {
   installFromSource as installPluginFromSource, installFromZip, installFromUrl, removePlugin,
   installedPlugins, CATALOG_FILE,
 } from './lib/pluginsource.mjs';
+import {
+  PLUGINS_DIR, POLICY_REL, SCOPE_TEXT, CLASS_SCOPE, CONTENT_CLASSES, SCRIPT_CLASSES, SCRIPT_MODES,
+  pluginShape, preflight, lockHash, lockValid, readPolicy, writePolicy, trustGates, modeOf,
+} from './lib/engineplugins.mjs';
 import { checkUpdate, localHistory } from './lib/version.mjs';
 import {
   checkSelf as checkSelfUpdate, applySelf, selfHistory, selfVersion, selfRemote, selfBranch, isSelfRepo,
@@ -253,6 +257,76 @@ function dropStalePlugins(installId, keepIds) {
 }
 
 /**
+ * The engine's view of one installed plugin, computed statically: what class and scope it declares, the
+ * lock hash the owner would pin, and whether its data patches resolve against the installed game data.
+ *
+ * Reading a patch document and the data tables it names is not free (a modpack patch can be hundreds of
+ * KB), and `buildState` runs on every emit, so the result is cached on a signature of the plugin folder
+ * and the version's data files. A version update or a plugin change moves the signature.
+ */
+const engineInfoCache = new Map();
+
+function versionDataSignal(dir) {
+  try {
+    const names = fs.readdirSync(path.join(dir, 'data')).filter((f) => f.endsWith('.json')).sort();
+    return names.map((f) => `${f}:${fs.statSync(path.join(dir, 'data', f)).mtimeMs}`).join(',');
+  } catch { return '?'; }
+}
+
+function enginePluginInfo(dir, id, dataSignal) {
+  const key = `${dir}\n${id}`;
+  const sig = `${dataSignal}|${(() => { try { return fs.statSync(path.join(dir, PLUGINS_DIR, id)).mtimeMs; } catch { return '?'; } })()}`;
+  const hit = engineInfoCache.get(key);
+  if (hit && hit.sig === sig) return hit.value;
+  const shape = pluginShape(dir, id);
+  let value;
+  if (!shape.ok) value = { ok: false, reason: shape.reason };
+  else {
+    const hash = lockHash(dir, id);
+    const locked = hash ? lockValid(dir, id, shape) : false;
+    const pf = preflight(dir, id);
+    value = {
+      ok: true, id: shape.id, name: shape.name, version: shape.version, cls: shape.cls,
+      scope: shape.scope, scopeText: shape.scope.map((s) => SCOPE_TEXT[s] || s),
+      classScope: CLASS_SCOPE[shape.cls] || [],
+      lockHash: hash, lockValid: locked,
+      preflight: { applicable: pf.applicable, ok: pf.ok, needsHost: !!pf.needsHost, problems: pf.problems || [] },
+    };
+  }
+  if (engineInfoCache.size > 128) engineInfoCache.clear();
+  engineInfoCache.set(key, { sig, value });
+  return value;
+}
+
+/** The owner's plugin policy as the UI needs it (policy.js fields plus the trusted pins). */
+function pluginPolicyState(dir) {
+  const r = readPolicy(dir, { pluginScripts: modeOf(config) });
+  return {
+    rel: POLICY_REL, file: displayPath(r.file), exists: r.exists,
+    policy: r.policy, trusted: r.trusted, allowDownloadHosts: r.allowDownloadHosts,
+    problems: r.problems, mode: modeOf(config),
+  };
+}
+
+/** The trusted.js gates for one script/trusted plugin, using the policy as it is on disk right now. */
+function trustState(info, policy, pinned) {
+  if (!info?.ok || !SCRIPT_CLASSES.includes(info.cls)) return null;
+  return trustGates({
+    shape: { id: info.id, cls: info.cls, scope: info.scope },
+    mode: modeOf(config), host: config.host, trusted: policy.trusted,
+    locked: info.lockValid, hash: info.lockHash,
+  }).map((g) => ({ ...g, pinned: !!pinned }));
+}
+
+/** One engine row plus everything the launcher can say about it. */
+function engineRow(dir, id, dataSignal, policy) {
+  const info = enginePluginInfo(dir, id, dataSignal);
+  if (!info.ok) return { id, info };
+  info.pinned = policy.trusted[info.id] === info.lockHash && !!info.lockHash;
+  return { id, info, gates: trustState(info, policy, info.pinned) };
+}
+
+/**
  * The plugin catalogue as the UI needs it: the shipped list, each row checked against the active
  * version's engine, plus what the engine itself reports as installed.
  *
@@ -273,16 +347,32 @@ function pluginSourceState() {
   const installed = {};
   let healed = false;
   for (const [id, rec] of Object.entries(record)) {
-    if (exists(path.join(entry.dir, 'plugins', id))) installed[id] = rec;
+    if (exists(path.join(entry.dir, PLUGINS_DIR, id))) installed[id] = rec;
     else healed = true;
   }
   if (healed) dropStalePlugins(entry.id, Object.keys(installed));
+  const dataSignal = support.ok ? versionDataSignal(entry.dir) : '?';
+  const policy = pluginPolicyState(entry.dir);
+  const items = doc.plugins.map((i) => {
+    const row = describeItem(i, { engine, installed });
+    if (!support.ok) return row;
+    // The engine reads whatever folder is in plugins/, so a plugin the user cloned or copied in by hand
+    // is just as loadable as one we installed — and needs the same explanations.
+    const onDisk = installed[row.id] || exists(path.join(entry.dir, PLUGINS_DIR, row.id));
+    if (!onDisk) return row;
+    const e = engineRow(entry.dir, row.id, dataSignal, policy);
+    return { ...row, onDisk: true, engineInfo: e.info, gates: e.gates || null, pinned: !!e.info.pinned };
+  });
   return {
     available: support.ok,
     reason: support.reason || '',
     engine,
+    installDir: displayPath(entry.dir),
     catalog: { file: displayPath(CATALOG_FILE), count: doc.plugins.length, updatedAt: doc.updatedAt, note: doc.note },
-    items: doc.plugins.map((i) => describeItem(i, { engine, installed })),
+    policy,
+    scriptModes: SCRIPT_MODES,
+    scopeText: SCOPE_TEXT,
+    items,
   };
 }
 
@@ -915,12 +1005,90 @@ const actions = {
     return { ok: true, ...engineModList(entry) };
   },
 
-  /** The shipped plugin catalogue plus the engine's own view of what is installed. */
+  /**
+   * The shipped plugin catalogue plus the engine's own view of what is installed. The engine's list is
+   * the authority on `status`; our static reading adds what the engine does not print — whether a
+   * content plugin's patches would resolve, and which owner gate a script plugin fails.
+   */
   async pluginSourceList() {
     const state = pluginSourceState();
     const entry = activeInstall(config);
-    const engineList = entry && state.available ? enginePluginList(entry.dir) : null;
-    return { ok: true, ...state, engineList };
+    if (!entry || !state.available) return { ok: true, ...state, engineList: null };
+    const list = enginePluginList(entry.dir);
+    const dataSignal = versionDataSignal(entry.dir);
+    const policy = state.policy;
+    const known = new Map(state.items.filter((i) => i.engineInfo?.ok).map((i) => [i.id, i.engineInfo]));
+    return {
+      ok: true, ...state,
+      engineList: list.ok ? {
+        ...list,
+        plugins: list.plugins.map((p) => {
+          const row = engineRow(entry.dir, p.id, dataSignal, policy);
+          return { ...p, engineInfo: row.info?.ok ? row.info : null, gates: row.gates || null };
+        }),
+      } : list,
+    };
+  },
+
+  /**
+   * Save the owner's plugin policy (plugins/config.json). Only the keys the UI owns are written; every
+   * other key — including `allowDownloadHosts`, which the engine's installer reads from the same file —
+   * is left exactly as it was.
+   */
+  async pluginPolicySave(body = {}) {
+    const entry = activeInstall(config);
+    if (!entry) return { ok: false, error: '还没有版本。' };
+    const current = readPolicy(entry.dir, { pluginScripts: modeOf(config) });
+    const list = (v) => (Array.isArray(v) ? v : String(v || '').split(/[\s,，]+/)).map((s) => String(s).trim()).filter(Boolean);
+    const next = {};
+    if (body.rooms !== undefined) next.rooms = String(body.rooms);
+    if (body.default !== undefined) next.default = list(body.default);
+    if (body.allow !== undefined) next.allow = list(body.allow);
+    if (body.classes !== undefined) {
+      const cls = body.classes && typeof body.classes === 'object' && !Array.isArray(body.classes) ? body.classes : {};
+      next.classes = { ...cls };
+    }
+    if (body.maxSets !== undefined) next.limits = { maxSets: Number(body.maxSets) };
+    if (body.allowIncompatible !== undefined) next.allowIncompatible = body.allowIncompatible === true;
+    if (body.allowDownloadHosts !== undefined) next.allowDownloadHosts = list(body.allowDownloadHosts);
+    const r = writePolicy(entry.dir, next);
+    if (!r.ok) return { ok: false, error: r.reason };
+    log({ channel: 'mods', stream: 'meta', line: `▶ 已写入 ${POLICY_REL}：${Object.keys(next).join(', ') || '（无改动）'}` });
+    emitState();
+    return { ok: true, policy: pluginPolicyState(entry.dir) };
+  },
+
+  /**
+   * Pin (or unpin) a script plugin's lock hash in plugins/config.json. The pin is the sha256 of the
+   * plugin.lock.json bytes, so it changes every time the author repacks — pinning a plugin whose lock
+   * does not currently match its files would only hide the real refusal, so that is refused here too.
+   */
+  async pluginTrustPin(body = {}) {
+    const entry = activeInstall(config);
+    if (!entry) return { ok: false, error: '还没有版本。' };
+    const id = String(body.id || '').trim();
+    if (!/^[a-z0-9][a-z0-9-]{1,31}$/.test(id)) return { ok: false, error: '插件 id 不合法。' };
+    const shape = pluginShape(entry.dir, id);
+    if (!shape.ok) return { ok: false, error: shape.reason };
+    if (!SCRIPT_CLASSES.includes(shape.cls)) return { ok: false, error: `${id} 是 ${shape.cls} 类，不需要授权钉住。` };
+    const current = readPolicy(entry.dir, { pluginScripts: modeOf(config) });
+    const trusted = { ...current.trusted };
+    if (body.on === false) {
+      delete trusted[id];
+    } else {
+      const hash = lockHash(entry.dir, id);
+      if (!hash) return { ok: false, error: `${id} 没有 plugin.lock.json：先用引擎的 pack 生成。` };
+      if (!lockValid(entry.dir, id, shape)) {
+        return { ok: false, error: `${id} 的 lock 与文件不符（文件被改过或 lock 过期），先重新打包再钉住。` };
+      }
+      trusted[id] = hash;
+      log({ channel: 'mods', stream: 'meta', line: `▶ 已钉住 ${id}：${hash.slice(0, 16)}…（每次重新打包都会变）` });
+    }
+    const r = writePolicy(entry.dir, { trusted });
+    if (!r.ok) return { ok: false, error: r.reason };
+    if (body.on === false) log({ channel: 'mods', stream: 'meta', line: `▶ 已取消钉住 ${id}` });
+    emitState();
+    return { ok: true, pinned: body.on !== false, policy: pluginPolicyState(entry.dir) };
   },
 
   /**

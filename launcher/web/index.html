@@ -204,10 +204,24 @@
                 <option value="0">0（从不信任）</option>
               </select>
             </label>
+            <label class="field"><span>脚本插件 <code>SP_PLUGIN_SCRIPTS</code></span>
+              <select id="cfg-plugin-scripts">
+                <option value="off">off（不执行 script / trusted 插件，默认）</option>
+                <option value="sandbox">sandbox（隔离执行 script 类，不看监听地址）</option>
+                <option value="trusted">trusted（受信任代码，需钉住 lock 且非公网监听）</option>
+                <option value="trusted-force">trusted-force（同上，但允许公网监听，有风险）</option>
+              </select>
+            </label>
             <label class="field check-field"><span>详细日志 <code>DEBUG</code></span>
               <input type="checkbox" id="cfg-debug">
             </label>
           </div>
+          <p class="fine">
+            <span class="mono">SP_PLUGIN_SCRIPTS</span> 由引擎<strong>启动时读一次</strong>，改动要重启服务器；
+            它同时决定 <span class="mono">script</span> / <span class="mono">trusted</span> 两类能不能被房间使用。
+            选 trusted 类模式后，还要在「mod 源 → 插件源 → 服主策略」里把每个插件的 lock 哈希钉住，
+            并且监听地址不能是 <span class="mono">0.0.0.0</span>（除非用 trusted-force）。
+          </p>
         </div>
 
         <div class="card">
@@ -409,6 +423,7 @@
               <button class="chip" data-filter="installed">已装</button>
               <button class="chip" data-filter="mismatch">不匹配本引擎</button>
               <button class="chip" data-filter="gated">需服主开启</button>
+              <button class="chip" data-filter="host">需宿主层</button>
               <button class="chip" data-filter="manual">需自行处理</button>
             </div>
             <div class="list-bar-right">
@@ -423,6 +438,44 @@
           </div>
           <div id="plug-list" class="mod-list"></div>
           <div class="pager" id="plug-pager" hidden></div>
+
+          <div class="subcard" id="plug-policy">
+            <div class="card-head">
+              <h3>服主策略 · <span class="mono">plugins/config.json</span></h3>
+              <div class="card-head-actions">
+                <button class="btn ghost sm" id="btn-pol-reload">重新读取</button>
+                <button class="btn primary sm" id="btn-pol-save">保存策略</button>
+              </div>
+            </div>
+            <div class="status-grid" id="pol-meta"></div>
+            <div class="form-grid">
+              <label class="field"><span>房间可用插件 <code>rooms</code></span>
+                <select id="pol-rooms">
+                  <option value="host">host（房主自己挑，默认）</option>
+                  <option value="fixed">fixed（只玩 default 那套，房主改不了）</option>
+                  <option value="off">off（房间玩原版；个人外观插件照旧）</option>
+                </select>
+              </label>
+              <label class="field"><span>同时启用内容集上限 <code>limits.maxSets</code></span>
+                <input type="number" id="pol-maxsets" min="0" max="64" step="1">
+              </label>
+              <label class="field check-field"><span>允许不兼容插件 <code>allowIncompatible</code></span>
+                <input type="checkbox" id="pol-incompatible">
+              </label>
+              <label class="field"><span>允许的插件 <code>allow</code>（* 或 id，逗号分隔）</span>
+                <input type="text" id="pol-allow" spellcheck="false" placeholder="*">
+              </label>
+              <label class="field"><span>新房间默认插件 <code>default</code>（id，逗号分隔）</span>
+                <input type="text" id="pol-default" spellcheck="false" placeholder="（留空＝原版）">
+              </label>
+              <label class="field"><span>允许下载的主机 <code>allowDownloadHosts</code>（逗号分隔）</span>
+                <input type="text" id="pol-hosts" spellcheck="false" placeholder="（留空＝不允许下载）">
+              </label>
+            </div>
+            <div class="term-filters" id="pol-classes"></div>
+            <p class="fine" id="pol-note"></p>
+          </div>
+
           <p class="fine">
             这份目录<strong>随启动器一起用 git 管理</strong>（<span class="mono" id="plug-file-path"></span>），
             只记录「有什么、适不适合当前引擎、要什么授权、去哪取」——<strong>启动器不托管任何包的字节</strong>。
@@ -432,8 +485,16 @@
           <p class="fine">
             <strong>插件没有全局启停</strong>：装进 <span class="mono">plugins/</span> 只是就位，
             实际由<strong>房主在房间里开</strong>（content/cosmetic）或<strong>玩家在设置里给自己开</strong>（ui）；
-            <span class="mono">script</span> / <span class="mono">trusted</span> 两类默认不执行，需要服主设置
-            <span class="mono">SP_PLUGIN_SCRIPTS</span> 并在房间里逐人同意。装好后<strong>不用重启服务器</strong>，下次载入页面引擎就会认到。
+            <span class="mono">script</span> / <span class="mono">trusted</span> 两类默认不执行，需要服主在这里配置并在房间里逐人同意。
+            装好后<strong>不用重启服务器</strong>，下次载入页面引擎就会认到。
+          </p>
+          <p class="fine">
+            <strong>「装得上」不等于「开得起来」</strong>：<span class="mono">content</span> 类插件的数据补丁要在
+            <strong>游戏现有的数据</strong>上生效（引擎的 <span class="mono">shared/plugins/patch.js</span> 要求每一级父路径都已存在）。
+            模组作者的「宿主适配层」——通常是一份单独的 <span class="mono">patches/*.patch</span> ——如果没装，
+            补丁就会写进一个游戏没有的命名空间，房主一启用就被拒。引擎此时只回一句
+            <strong>「该插件不能在房间中启用」</strong>（它把不认识的错误码一律回落到这个码），真正的原因只在服务端日志的英文
+            <span class="mono">detail</span> 里。启动器会<strong>按同一套规则预先检查</strong>，把缺的那一级路径直接标出来。
           </p>
         </div>
 

@@ -470,6 +470,7 @@ function fillConfigForm() {
   $('#cfg-combat').value = c.combat;
   $('#cfg-verify').value = c.verify;
   $('#cfg-trust').value = c.trustProxy;
+  $('#cfg-plugin-scripts').value = ['sandbox', 'trusted', 'trusted-force'].includes(c.pluginScripts) ? c.pluginScripts : 'off';
   $('#cfg-debug').checked = !!c.debug;
   $('#cfg-concurrency').value = c.assetConcurrency;
   $('#cfg-autocheck').checked = !!c.autoUpdateCheck;
@@ -682,6 +683,7 @@ function render() {
   renderReleaseList();
   renderModSource();
   renderPluginSource();
+  renderPluginPolicy();
   renderSourceSwitch();
   renderAbout();
   renderTaskProgress();
@@ -706,6 +708,7 @@ function readConfigForm() {
     combat: $('#cfg-combat').value,
     verify: $('#cfg-verify').value,
     trustProxy: $('#cfg-trust').value,
+    pluginScripts: $('#cfg-plugin-scripts').value,
     debug: $('#cfg-debug').checked,
     assetConcurrency: Number($('#cfg-concurrency').value) || 16,
     autoUpdateCheck: $('#cfg-autocheck').checked,
@@ -1119,6 +1122,44 @@ function wire() {
     renderPluginSource();
   });
 
+
+  // ---- 服主策略：保存与钉住
+  const policyBody = () => ({
+    rooms: $('#pol-rooms').value,
+    maxSets: Number($('#pol-maxsets').value),
+    allowIncompatible: $('#pol-incompatible').checked,
+    allow: $('#pol-allow').value,
+    default: $('#pol-default').value,
+    allowDownloadHosts: $('#pol-hosts').value,
+    classes: Object.fromEntries($$('#pol-classes .chip').map((c) => [c.dataset.cls, c.classList.contains('active')])),
+  });
+  $('#pol-classes').addEventListener('click', (e) => {
+    const c = e.target.closest('.chip');
+    if (!c) return;
+    c.classList.toggle('active');
+    c.textContent = c.textContent.replace(/ ✓$/, '') + (c.classList.contains('active') ? ' ✓' : '');
+  });
+  $('#btn-pol-save').addEventListener('click', async () => {
+    try {
+      const r = await api('/api/pluginsource/policy', 'POST', policyBody());
+      if (!r.ok) return toast(r.error || '保存失败', 'error');
+      S.pluginSource = { ...(S.pluginSource || {}), policy: r.policy };
+      renderPluginPolicy();
+      toast('策略已写入 plugins/config.json（无需重启）', 'ok');
+    } catch (e) { toast(e.message, 'error'); }
+  });
+  $('#btn-pol-reload').addEventListener('click', async () => {
+    try {
+      const r = await api('/api/pluginsource', 'POST');
+      S.pluginSource = { ...(S.pluginSource || {}), ...r };
+      plugItems = r.items || [];
+      plugEngine = r.engineList || null;
+      renderPluginPolicy();
+      renderPluginSource();
+      toast('已重新读取插件记录与策略', 'ok');
+    } catch (e) { toast(e.message, 'error'); }
+  });
+
   // ---- 插件源
   $('#btn-plug-engine').addEventListener('click', async () => {
     try {
@@ -1171,9 +1212,25 @@ function wire() {
         const r = await api('/api/pluginsource/install', 'POST', { id: t.dataset.id });
         if (r.started) toast(`已开始安装 ${t.dataset.id}`, 'ok'); else { toast(r.error || '无法安装', 'error'); t.disabled = false; }
       } else if (act === 'plug-remove') {
-        if (!confirm(`卸载插件 ${t.dataset.id}？\n\n会删掉 plugins/${t.dataset.id}/（这是启动器装的，可直接重装）。`)) return;
+        const ours = t.dataset.ours === '1';
+        const note = ours ? '（这是启动器装的，可直接重装）' : '（这份不在启动器的记录里，可能是你自己放进 plugins/ 的，删除后没有备份）';
+        if (!confirm(`卸载插件 ${t.dataset.id}？\n\n会删掉 plugins/${t.dataset.id}/ ${note}`)) return;
         const r = await api('/api/pluginsource/remove', 'POST', { id: t.dataset.id });
         toast(r.ok ? '已卸载' : (r.error || '卸载失败'), r.ok ? 'ok' : 'error');
+      } else if (act === 'plug-pin' || act === 'plug-unpin') {
+        const on = act === 'plug-pin';
+        if (on && !confirm(`钉住 ${t.dataset.id} 的 lock 哈希？\n\n这表示你审核过这份代码，允许它以受信任代码运行。\n作者每次重新打包，哈希都会变，需要重新钉。`)) return;
+        const r = await api('/api/pluginsource/trust', 'POST', { id: t.dataset.id, on });
+        if (!r.ok) return toast(r.error || '操作失败', 'error');
+        S.pluginSource = { ...(S.pluginSource || {}), policy: r.policy };
+        toast(on ? '已钉住并写入 plugins/config.json' : '已取消钉住', 'ok');
+        try {
+          const fresh = await api('/api/pluginsource', 'POST');
+          S.pluginSource = { ...(S.pluginSource || {}), ...fresh };
+          plugItems = fresh.items || [];
+          renderPluginPolicy();
+          renderPluginSource();
+        } catch { /* 列表刷新失败不影响写入结果 */ }
       }
     } catch (err) { toast(err.message, 'error'); }
   });
@@ -1490,6 +1547,67 @@ async function loadPluginSource() {
   renderPluginSource();
 }
 
+/**
+ * 服主策略：plugins/config.json。字段与引擎的 server/plugins/policy.js 一一对应，未知键由后端保留，
+ * 所以这里只显示和写回我们管的键。script / trusted 两类的「能不能用」由 SP_PLUGIN_SCRIPTS 与这道策略
+ * 一起决定：策略里的 classes 只能把环境已经打开的东西关掉，不能凭空打开。
+ */
+const POLICY_CLASSES = [
+  ['cosmetic', '外观', '房主/玩家'],
+  ['content', '内容', '房主'],
+  ['script', '脚本', '需 SP_PLUGIN_SCRIPTS'],
+  ['trusted', '受信任', '需 SP_PLUGIN_SCRIPTS + 钉住'],
+  ['ui', '界面', '玩家'],
+  ['lang', '语言', '玩家'],
+];
+
+function renderPluginPolicy() {
+  const host = $('#pol-meta');
+  if (!host) return;
+  const ps = S?.pluginSource || {};
+  const pol = ps.policy;
+  const box = $('#plug-policy');
+  if (box) box.hidden = !pol;
+  if (!pol) return;
+  const p = pol.policy || {};
+  const mode = pol.mode || 'off';
+  const modeText = { off: 'off（不执行脚本插件）', sandbox: 'sandbox（隔离执行 script）', trusted: 'trusted（受信任代码）', 'trusted-force': 'trusted-force（允许公网，有风险）' }[mode] || mode;
+  const trustedIds = Object.keys(pol.trusted || {});
+  host.innerHTML = [
+    ['策略文件', pol.exists ? '已存在' : '未创建（正在用引擎默认值）', pol.exists ? 'ok' : 'warn'],
+    ['房间可用插件', { host: 'host（房主挑）', fixed: 'fixed（只玩 default）', off: 'off（房间玩原版）' }[p.rooms] || p.rooms || '—', ''],
+    ['SP_PLUGIN_SCRIPTS', modeText, mode === 'off' ? 'warn' : 'ok'],
+    ['钉住的 lock', trustedIds.length ? `${trustedIds.length} 个` : '无', trustedIds.length ? 'ok' : 'warn'],
+    ['策略文件问题', pol.problems?.length ? String(pol.problems.length) : '无', pol.problems?.length ? 'warn' : 'ok'],
+  ].map(([k, v, cls]) => `<div class="status-item"><span class="k">${escapeHtml(k)}</span><span class="v ${cls}">${escapeHtml(String(v))}</span></div>`).join('');
+
+  $('#pol-rooms').value = ['host', 'fixed', 'off'].includes(p.rooms) ? p.rooms : 'host';
+  $('#pol-maxsets').value = Number.isInteger(p.maxSets) ? p.maxSets : 4;
+  $('#pol-incompatible').checked = !!p.allowIncompatible;
+  $('#pol-allow').value = (p.allow || []).join(', ');
+  $('#pol-default').value = (p.default || []).join(', ');
+  $('#pol-hosts').value = (pol.allowDownloadHosts || []).join(', ');
+
+  const clsHost = $('#pol-classes');
+  const active = p.classes || {};
+  clsHost.innerHTML = POLICY_CLASSES.map(([id, label, hint]) => {
+    const on = active[id] === true;
+    const envOnly = (id === 'script' || id === 'trusted') && mode === 'off';
+    return `<button class="chip${on ? ' active' : ''}" data-cls="${id}" title="${escapeHtml(hint)}${envOnly ? '：SP_PLUGIN_SCRIPTS=off，这里打开也没用' : ''}">${escapeHtml(label)}${on ? ' ✓' : ''}${envOnly ? ' ⚠' : ''}</button>`;
+  }).join('');
+
+  const notes = [];
+  if (pol.problems?.length) notes.push(`策略文件有 ${pol.problems.length} 处问题：${pol.problems.join('；')}`);
+  if (mode === 'off') notes.push('SP_PLUGIN_SCRIPTS=off：script / trusted 两类不会加载，装再多也没用。可在「配置」页改。');
+  if (mode === 'trusted' && ['0.0.0.0', '::'].includes(S?.config?.host)) notes.push(`SP_PLUGIN_SCRIPTS=${mode} 但监听 ${S.config.host}（公网/未指定地址），受信任插件会被 PLUGIN_TRUST_PUBLIC 拒绝：改成 127.0.0.1 或局域网地址，或改用 trusted-force。`);
+  const pinned = (plugItems || []).filter((i) => ['script', 'trusted'].includes(i.engineInfo?.cls) && i.installed);
+  if (pinned.length) {
+    const okCount = pinned.filter((i) => i.pinned).length;
+    notes.push(`${pinned.length} 个脚本类插件已装，其中 ${okCount} 个已钉住 lock。改动 SP_PLUGIN_SCRIPTS 需要重启服务器；这份策略文件是热读的，保存后房间下次查询就生效。`);
+  }
+  $('#pol-note').innerHTML = notes.length ? notes.map((n) => `<span class="src-note warn">${escapeHtml(n)}</span>`).join('<br>') : '策略文件保存后<strong>不用重启</strong>（引擎按 mtime 重读）；<span class="mono">SP_PLUGIN_SCRIPTS</span> 例外，它只在启动时读一次。';
+}
+
 function renderPluginSource() {
   const host = $('#plug-list');
   if (!host) return;
@@ -1515,9 +1633,10 @@ function renderPluginSource() {
     return;
   }
   const shown = plugItems.filter((it) => {
-    if (plugFilter === 'installed' && !it.installed) return false;
+    if (plugFilter === 'installed' && !it.installed && !it.onDisk) return false;
     if (plugFilter === 'mismatch' && it.appVerdict !== 'bad') return false;
     if (plugFilter === 'gated' && !['script', 'trusted'].includes(it.class)) return false;
+    if (plugFilter === 'host' && !it.engineInfo?.preflight?.needsHost) return false;
     if (plugFilter === 'manual' && !it.manual) return false;
     if (plugQuery) {
       const q = plugQuery.toLowerCase();
@@ -1539,13 +1658,17 @@ function renderPluginSource() {
       : it.appVerdict === 'bad' ? `<span class="badge badge-warn">不匹配本引擎（需要 ${escapeHtml(it.app)}）</span>`
         : '<span class="badge">未声明适用版本</span>';
     const gated = ['script', 'trusted'].includes(it.class);
+    const ei = it.engineInfo;
+    const pf = ei?.preflight;
     const badges = [
       `<span class="badge">v${escapeHtml(it.version)}</span>`,
       `<span class="badge">${escapeHtml(it.class)}</span>`,
       verdict,
-      have ? '<span class="badge badge-ok">已装</span>' : '',
+      have ? '<span class="badge badge-ok">已装</span>' : (it.onDisk ? '<span class="badge badge-ok">已在 plugins/ 里</span>' : ''),
       it.dist ? `<span class="badge">${fmtBytes(it.dist.bytes)}${it.dist.declared ? ' · 作者提供哈希' : ''}</span>` : (it.manual ? '<span class="badge badge-warn">需自行处理</span>' : '<span class="badge">从作者仓库取</span>'),
       gated ? '<span class="badge badge-warn">默认不执行</span>' : '',
+      pf?.needsHost ? '<span class="badge badge-warn">需要作者宿主层</span>' : (pf?.applicable && !pf.ok ? '<span class="badge badge-warn">补丁有问题</span>' : ''),
+      it.pinned ? '<span class="badge badge-ok">已钉住 lock</span>' : '',
     ].join('');
     const eng = (plugEngine?.plugins || []).find((p) => p.id === it.id);
     const meta = [
@@ -1555,13 +1678,30 @@ function renderPluginSource() {
       it.license ? `许可 ${String(it.license).slice(0, 40)}` : '',
       `范围 ${scopeText(it)}`,
       it.permissions?.length ? `权限 ${it.permissions.join(' / ')}` : '',
+      ei?.lockHash ? `lock ${ei.lockHash.slice(0, 12)}…${ei.lockValid ? '' : '（与文件不符）'}` : '',
     ].filter(Boolean).join(' · ');
+    // 静态预检的结果：引擎会因为这几条拒绝在房间里启用它，而界面平时只显示「该插件不能在房间中启用」
+    const preflightNote = !pf?.applicable ? ''
+      : pf.ok ? '<div class="src-note ok">补丁预检通过：这份插件的数据补丁能在当前游戏数据上生效。</div>'
+        : pf.problems.map((pr) => `<div class="src-note warn">${pf.needsHost ? '需要宿主层：' : '补丁会被拒绝：'}${escapeHtml(pr.detail)}${pr.at ? `（<span class="mono">${escapeHtml(pr.at)}</span>）` : ''}</div>`).join('');
+    const lockNote = (have || it.onDisk) && ['script', 'trusted'].includes(ei?.cls) && !ei?.lockHash
+      ? '<div class="src-note warn">没有 plugin.lock.json：这份插件是源码形态，引擎无法校验字节，受信任模式不会加载它。要先在版本目录里用引擎自己的 <span class="mono">node tools/plugin.mjs pack plugins/' + escapeHtml(it.id) + '</span> 生成锁文件。</div>'
+      : '';
+    // 引擎在第一次拒绝时就返回，所以「未判定」的闸门不能显示成通过或失败
+    const gateNote = (it.gates || []).map((g) => {
+      const cls = g.after ? '' : g.ok ? 'ok' : 'bad';
+      const mark = g.after ? '·' : g.ok ? '✔' : '✖';
+      const tail = g.after ? '（前一道没过，引擎不会走到这里）' : g.ok ? '' : ` <span class="mono">${escapeHtml(g.code)}</span>`;
+      return `<div class="gate ${cls}">${mark} <strong>${escapeHtml(g.label)}</strong> — ${escapeHtml(g.detail)}${tail}</div>`;
+    }).join('');
     const actions = [
       it.manual
         ? `<button class="btn ghost sm" data-act="plug-open" data-url="${escapeHtml(it.homepage)}">看作者说明</button>`
-        : have
-          ? `<button class="btn ghost sm" data-act="plug-remove" data-id="${escapeHtml(it.id)}" ${busy ? 'disabled' : ''}>卸载</button>`
-          : `<button class="btn primary sm" data-act="plug-install" data-id="${escapeHtml(it.id)}" ${busy || !ps.available ? 'disabled' : ''}>安装</button>`,
+        : `<button class="btn ${have || it.onDisk ? 'ghost' : 'primary'} sm" data-act="plug-install" data-id="${escapeHtml(it.id)}" ${busy || !ps.available ? 'disabled' : ''}>${have || it.onDisk ? '重新安装' : '安装'}</button>${
+          have || it.onDisk ? `<button class="btn ghost sm" data-act="plug-remove" data-id="${escapeHtml(it.id)}" data-ours="${have ? '1' : '0'}" ${busy ? 'disabled' : ''}>卸载</button>` : ''}`,
+      (have || it.onDisk) && ['script', 'trusted'].includes(ei?.cls) && ei?.lockHash
+        ? `<button class="btn ${it.pinned ? 'ghost' : 'primary'} sm" data-act="${it.pinned ? 'plug-unpin' : 'plug-pin'}" data-id="${escapeHtml(it.id)}">${it.pinned ? '取消钉住' : '钉住 lock 哈希'}</button>`
+        : '',
       it.homepage ? `<button class="btn ghost sm" data-act="plug-open" data-url="${escapeHtml(it.homepage)}">仓库</button>` : '',
     ].join('');
     return `<div class="src-item${it.appVerdict === 'bad' ? ' dim' : ''}">
@@ -1571,6 +1711,9 @@ function renderPluginSource() {
         ${it.description ? `<div class="src-note">作者原文：${escapeHtml(it.description)}</div>` : ''}
         ${it.manual ? `<div class="src-note warn">${escapeHtml(it.manualReason)}</div>` : ''}
         ${it.authorNote ? `<div class="src-note">${escapeHtml(it.authorNote)}</div>` : ''}
+        ${preflightNote}
+        ${lockNote}
+        ${gateNote}
       </div>
       <div class="src-actions">${actions}</div>
     </div>`;

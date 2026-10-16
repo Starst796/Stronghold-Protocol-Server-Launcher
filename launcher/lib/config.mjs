@@ -247,6 +247,9 @@ export const DEFAULT_CONFIG = {
   verify: 'off',             // off | sample | all   → SP_VERIFY
   trustProxy: 'auto',        // auto | 1 | 0         → TRUST_PROXY
   debug: false,              // → DEBUG
+  // → SP_PLUGIN_SCRIPTS. The engine reads this once at boot; it is what makes the `script` and
+  // `trusted` plugin classes usable at all. `off` (default) leaves both denied.
+  pluginScripts: 'off',      // off | sandbox | trusted | trusted-force
   openBrowser: true,
   autoStart: false,          // start the server as soon as the launcher opens
   autoUpdateCheck: true,     // check GitHub for updates on open
@@ -316,6 +319,7 @@ const COERCE = {
   verify: (v) => (['sample', 'all'].includes(String(v)) ? String(v) : 'off'),
   trustProxy: (v) => ([ 'auto', '1', '0' ].includes(String(v)) ? String(v) : 'auto'),
   debug: (v) => !!v,
+  pluginScripts: (v) => (['sandbox', 'trusted', 'trusted-force'].includes(String(v)) ? String(v) : 'off'),
   openBrowser: (v) => v !== false,
   autoStart: (v) => !!v,
   autoUpdateCheck: (v) => v !== false,
@@ -391,6 +395,9 @@ export function serverEnv(cfg) {
     TRUST_PROXY: cfg.trustProxy,
   };
   if (cfg.debug) env.DEBUG = '1';
+  // `off` is left unset on purpose: the engine reads a missing value as "no script classes",
+  // and an inherited value from the shell should not silently enable them.
+  if (cfg.pluginScripts && cfg.pluginScripts !== 'off') env.SP_PLUGIN_SCRIPTS = cfg.pluginScripts;
   return env;
 }
 

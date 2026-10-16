@@ -412,6 +412,7 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .src-sub { margin-top: 3px; font-size: 12px; color: var(--text-dim); word-break: break-all; }
 .src-note { margin-top: 5px; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
 .src-note.warn { color: #f0d68a; }
+.src-note.ok { color: #9fd7ae; }
 .src-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; flex-shrink: 0; }
 
 /* ------------------------------------------------------------------ 列表工具条与分页 */
@@ -438,3 +439,21 @@ input[type="checkbox"] { accent-color: var(--accent); }
 }
 .pager button:hover:not(:disabled) { border-color: var(--accent); color: #b7f0c4; }
 .pager button:disabled { opacity: .4; cursor: default; }
+
+/* ------------------------------------------------------------------ 服主策略（嵌套小节） */
+.subcard {
+  margin-top: 14px; padding: 12px 14px 4px;
+  border: 1px solid var(--line); border-radius: 12px; background: #121a24;
+}
+.subcard .card-head { margin-bottom: 8px; }
+.subcard .card-head h3 { font-size: 13.5px; margin: 0; }
+.subcard .form-grid { margin-bottom: 8px; }
+.subcard .term-filters { margin: 4px 0 8px; }
+/* 一道没过的闸门：整条列出，中文原因来自引擎自己的错误表 */
+.gate {
+  margin-top: 5px; padding: 7px 10px; border-radius: 8px; font-size: 11.5px; line-height: 1.55;
+  border: 1px solid var(--line); background: #10161e; color: var(--text-dim);
+}
+.gate.ok { border-color: #24402f; color: #9fd7ae; }
+.gate.bad { border-color: #4a3520; background: #1c1710; color: #f0d68a; }
+.gate .mono { color: inherit; opacity: .8; }

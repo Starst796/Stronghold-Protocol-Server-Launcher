@@ -190,6 +190,12 @@ async function api(req, res, url, { getState, actions, logStore }) {
     case 'POST /api/pluginsource/remove':
       return sendJson(res, 200, await actions.pluginSourceRemove(body));
 
+    case 'POST /api/pluginsource/policy':
+      return sendJson(res, 200, await actions.pluginPolicySave(body));
+
+    case 'POST /api/pluginsource/trust':
+      return sendJson(res, 200, await actions.pluginTrustPin(body));
+
     case 'POST /api/mods/select':
       return sendJson(res, 200, actions.modsSelect(body?.ids));
 
