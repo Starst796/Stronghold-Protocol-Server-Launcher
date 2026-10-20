@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { INSTALLS_DIR, sharedDirOf, gitUrlCandidates } from './config.mjs';
 import { exists, readJson, mkdirp, runCapture, IS_WIN, dirSize } from './util.mjs';
-import { gitCommand, isGitRepo, gitInfo } from './repo.mjs';
+import { gitCommand, isGitRepo, gitInfo, depsState } from './repo.mjs';
 
 /** The subdirectories of `public/` that every version shares (the big, downloaded ones). */
 export const SHARED_SUBDIRS = ['assets', 'fonts'];
@@ -292,6 +292,8 @@ export function installStatus(cfg, entry) {
     isRepo: false,
     packageVersion: null,
     hasNodeModules: false,
+    missingPackages: [],
+    depsStale: false,
     assetsPresent: false,
     assetsLinked: false,
     linkTargetOk: false,
@@ -300,7 +302,12 @@ export function installStatus(cfg, entry) {
   if (!out.exists) return out;
   out.isRepo = isGitRepo(dir);
   out.packageVersion = readJson(path.join(dir, 'package.json'), null)?.version ?? null;
-  out.hasNodeModules = exists(path.join(dir, 'node_modules', 'ws', 'package.json'));
+  // Same rule as inspectInstall: every dependency the version declares must actually be installed
+  // (`ws` alone used to stand for the whole set, so a version missing a newly added package looked fine).
+  const deps = depsState(dir);
+  out.missingPackages = deps.missing;
+  out.depsStale = deps.stale;
+  out.hasNodeModules = deps.missing.length === 0;
   const assets = path.join(dir, 'public', 'assets');
   out.assetsPresent = dirExists(assets) && hasEntries(assets);
   out.assetsLinked = isLink(assets);

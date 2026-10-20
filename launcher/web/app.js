@@ -281,8 +281,8 @@ function renderHome() {
   const rows = [
     ['部署状态', install.exists ? (install.hasPackageJson ? '已下载' : '目录异常') : '未下载',
       install.exists && install.hasPackageJson ? 'ok' : (install.exists ? 'err' : 'warn')],
-    ['Node 依赖', install.hasNodeModules ? '已安装' : (install.hasPackageJson ? `缺少 ${install.missingPackages.join('、') || '若干'}` : '—'),
-      install.hasNodeModules ? 'ok' : (install.hasPackageJson ? 'warn' : '')],
+    ['Node 依赖', install.hasNodeModules ? (install.depsStale ? '有新增依赖待安装（package-lock 已更新）' : '已安装') : (install.hasPackageJson ? `缺少 ${install.missingPackages.join('、') || '若干'}` : '—'),
+      install.hasNodeModules && !install.depsStale ? 'ok' : (install.hasPackageJson ? 'warn' : '')],
     ['前端库 vendor', install.hasVendor ? '已就绪' : (install.hasPackageJson ? `缺少 ${install.missingVendor.join('、')}` : '—'),
       install.hasVendor ? 'ok' : (install.hasPackageJson ? 'warn' : '')],
     ['美术 / 音频', !install.hasPackageJson ? '—' : (install.assets.present
@@ -520,7 +520,7 @@ function versionCard(v, { active }) {
   const warn = [];
   if (!v.exists) warn.push('目录不存在');
   else if (!v.packageVersion) warn.push('缺少 package.json');
-  if (v.exists && !v.hasNodeModules) warn.push('依赖未安装');
+  if (v.exists && (!v.hasNodeModules || v.depsStale)) warn.push('依赖未安装');
   if (v.exists && !v.assetsPresent) warn.push('素材未下载');
   const cls = ['mod-card', isActive ? 'on' : '', v.exists ? '' : 'off'].filter(Boolean).join(' ');
   const actions = v.exists
@@ -553,7 +553,8 @@ function renderVersions() {
       ['来源', active.repo || '（本地目录）', 'mono'],
       ['分支 / 提交', `${active.ref || '—'}${active.commit ? ` · ${active.commit.slice(0, 8)}` : ''}`, ''],
       ['目录', active.dir, 'mono'],
-      ['依赖', active.hasNodeModules ? '已安装' : '未安装', active.hasNodeModules ? 'ok' : 'warn'],
+      ['依赖', active.hasNodeModules ? (active.depsStale ? '有待安装的新增依赖' : '已安装') : '未安装',
+        active.hasNodeModules && !active.depsStale ? 'ok' : 'warn'],
       ['素材', active.assetsLinked ? '已共享（链接）' : (active.assetsPresent ? '本版本自带' : '未下载'),
         active.assetsLinked || active.assetsPresent ? 'ok' : 'warn'],
       ['占用空间', fmtBytes(active.sizeBytes), ''],
@@ -584,7 +585,7 @@ function renderVersions() {
   if (S.config.shareAssets === false) hints.push('素材共享已关闭：每个版本都会各自下载一份约 580 MB 的素材。可在「配置 → 下载与更新」开启。');
   else if (active && !active.assetsLinked && active.assetsPresent) hints.push('当前版本的素材还没有接入共享区 —— 点「重建素材链接」即可（会把已有素材收纳进共享区，不会重新下载）。');
   if (S.server.status === 'running') hints.push('服务器正在运行：切换版本或更新前请先「停止服务器」。');
-  const needsSetup = list.filter((v) => !v.exists || !v.packageVersion || !v.hasNodeModules);
+  const needsSetup = list.filter((v) => !v.exists || !v.packageVersion || !v.hasNodeModules || v.depsStale);
   if (needsSetup.length) hints.push(`${needsSetup.length} 个版本未就绪（缺目录 / 依赖 / 素材），可在其卡片上点「更新」补全。`);
   $('#versions-hint').textContent = hints.join(' ');
 

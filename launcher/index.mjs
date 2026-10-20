@@ -23,7 +23,7 @@ import {
   linkInstallAssets, ensureShared, recordCommit, describeRepo, sharedPublicDir, checkInstallUpdate,
 } from './lib/installs.mjs';
 import {
-  inspectInstall, installFromSource, updateFromSource, npmCommand, gitCommand, gameDir, parseChangelog, gitInfo,
+  inspectInstall, installFromSource, updateFromSource, npmCommand, npmInvocation, gitCommand, gameDir, parseChangelog, gitInfo,
   syncAssets, assetManifestHeld, localArtState, localExtractArgs,
 } from './lib/repo.mjs';
 import {
@@ -51,7 +51,7 @@ import {
   checkSelf as checkSelfUpdate, applySelf, selfHistory, selfVersion, selfRemote, selfBranch, isSelfRepo,
 } from './lib/selfupdate.mjs';
 import {
-  exists, openExternal, openFolder, localAddresses, hasCommand, runCapture, fetchWithTimeout, nowIso, prependPath, gitInstallHint, IS_WIN, IS_MAC, IS_LINUX,
+  exists, openExternal, openFolder, localAddresses, hasCommand, runCapture, runStream, fetchWithTimeout, nowIso, prependPath, gitInstallHint, IS_WIN, IS_MAC, IS_LINUX,
   displayPath, formatBytes, mkdirp,
 } from './lib/util.mjs';
 
@@ -522,6 +522,57 @@ const linkStep = () => ({
   },
 });
 
+/**
+ * Install whatever the version's own `package.json` declares but `node_modules` does not have.
+ *
+ * The game's `tools/setup.mjs` skips `npm install` when *its* list of packages is present, so an install
+ * created before upstream added a dependency (0.3.1: `acorn`, `ses`) never got it — 「修复安装」 said it
+ * was finished and the server then failed on `import 'acorn'`. This step compares against the install's
+ * real manifest (repo.mjs `depsState`), so it also covers the next dependency upstream adds.
+ */
+const dependencyStep = (dir) => ({
+  label: '同步 Node 依赖（按 package.json）',
+  run: async (ctx) => {
+    if (!exists(path.join(dir, 'package.json'))) { ctx.log('还没有 package.json，跳过依赖安装。', 'meta'); return; }
+    const before = inspectInstall({ installDir: dir });
+    if (before.missingPackages.length === 0 && !before.depsStale) { ctx.log('依赖已齐全，跳过 npm install。', 'meta'); return; }
+
+    const npm = npmInvocation();
+    if (!npm) {
+      throw new Error(`缺少依赖（${before.missingPackages.join('、') || 'package-lock.json 有更新'}），但未找到 npm：请安装 Node.js（含 npm）后重试`);
+    }
+    ctx.log(before.missingPackages.length
+      ? `缺少依赖：${before.missingPackages.join('、')} → npm install`
+      : 'package-lock.json 比已安装的依赖新 → npm install', 'meta');
+
+    const handle = runStream(npm.cmd, [...npm.args, 'install', '--no-audit', '--no-fund'], {
+      cwd: dir,
+      shell: npm.shell,
+      onLine: (stream, line) => ctx.log(line, stream),
+    });
+    ctx.trackChild(handle);
+    const res = await handle.done;
+    ctx.trackChild(null);
+    if (res.error) throw res.error;
+    if (res.code !== 0) throw new Error(`npm install 失败（退出码 ${res.code}）`);
+
+    const after = inspectInstall({ installDir: dir });
+    if (after.missingPackages.length) throw new Error(`依赖仍不完整：${after.missingPackages.join('、')}（npm install 未装上）`);
+    // npm's postinstall normally refreshes public/vendor; do it here when it did not (or postinstall was skipped).
+    if (after.missingVendor.length) {
+      const vendor = runStream(process.execPath, [path.join('tools', 'vendor.mjs')], {
+        cwd: dir,
+        onLine: (stream, line) => ctx.log(line, stream),
+      });
+      ctx.trackChild(vendor);
+      const vr = await vendor.done;
+      ctx.trackChild(null);
+      if (vr.code !== 0) throw new Error(`复制前端库失败（退出码 ${vr.code}）`);
+    }
+    ctx.log('依赖已就绪。', 'meta');
+  },
+});
+
 function deploySteps(action) {
   const cfg = config;
   const dir = gameDir(cfg);
@@ -535,10 +586,12 @@ function deploySteps(action) {
       run: (ctx) => ensureSources(ctx),
     });
     steps.push(linkStep());
+    steps.push(dependencyStep(dir));
     steps.push({ ...nodeStep('安装依赖、前端库并下载素材（可中断续传）', setupArgs(), dir, { env: setupEnv() }), onDone: () => { sync.done = true; } });
     steps.push(assetHealStep(dir, sync));
   } else if (action === 'repair') {
     steps.push(linkStep());
+    steps.push(dependencyStep(dir));
     steps.push({ ...nodeStep('检查并补全依赖与素材（可中断续传）', setupArgs(), dir, { env: setupEnv() }), onDone: () => { sync.done = true; } });
     steps.push(assetHealStep(dir, sync));
   } else if (action === 'link') {
@@ -554,16 +607,35 @@ function deploySteps(action) {
     const args = ['--check', ...(cfg.clientDir ? ['--game', cfg.clientDir] : [])];
     steps.push(nodeStep('检测本机明日方舟客户端', [path.join('tools', 'setup.mjs'), ...args], dir, { env: setupEnv(), optional: true }));
   } else if (action === 'deps') {
-    const npm = npmCommand();
-    if (npm) steps.push({ label: '安装 Node 依赖（npm install）', cmd: npm, args: ['install', '--no-audit', '--no-fund'], cwd: dir });
-    steps.push(nodeStep('复制前端库到 public/vendor', [path.join('tools', 'vendor.mjs')], dir, { optional: !npm }));
+    const npm = npmInvocation();
+    // An explicit 「安装依赖」 must fail loudly when npm is missing — silently skipping it and reporting
+    // success is how a user ends up with an install that cannot start.
+    if (!npm) throw new Error('未找到 npm：无法安装依赖，请先安装 Node.js（含 npm）。');
+    steps.push({
+      label: '安装 Node 依赖（npm install）',
+      run: async (ctx) => {
+        const handle = runStream(npm.cmd, [...npm.args, 'install', '--no-audit', '--no-fund'], {
+          cwd: dir,
+          shell: npm.shell,
+          onLine: (stream, line) => ctx.log(line, stream),
+        });
+        ctx.trackChild(handle);
+        const res = await handle.done;
+        ctx.trackChild(null);
+        if (res.error) throw res.error;
+        if (res.code !== 0) throw new Error(`npm install 失败（退出码 ${res.code}）`);
+      },
+    });
+    steps.push(nodeStep('复制前端库到 public/vendor', [path.join('tools', 'vendor.mjs')], dir));
   } else if (action === 'assets') {
     steps.push({
       label: '下载美术 / 音频素材（约 250 MB，可续传）',
       run: (ctx) => runAssetSync(ctx, { strict: true, sync }),
     });
   } else if (action === 'doctor') {
-    steps.push(nodeStep('运行环境诊断', [path.join('tools', 'doctor.mjs')], dir, { optional: true }));
+    // Not optional: doctor exits 1 when something essential is missing, and swallowing that made the UI
+    // report 「✔ 环境诊断 完成」 right below a list of ✘ rows.
+    steps.push(nodeStep('运行环境诊断', [path.join('tools', 'doctor.mjs')], dir));
   } else {
     throw new Error(`未知的部署动作：${action}`);
   }
@@ -580,6 +652,11 @@ async function runDeploy(action) {
   promise.then((r) => {
     refreshInstall();
     emitState();
+    if (action === 'doctor' && !r.ok) {
+      // Exit code 1 from doctor means "problems found", not "the tool broke": say which without calling it a failure.
+      toast('环境诊断完成，但发现了需要处理的问题（详见终端输出）', 'warn', 8000);
+      return;
+    }
     toast(r.ok ? `${labels[action] || action} 完成` : `${labels[action] || action} 失败`, r.ok ? 'ok' : 'error');
   });
   return { started: true };
@@ -616,6 +693,10 @@ async function runUpdate(force, resync = false) {
         config = patchConfig({ installs: (config.installs || []).map((e) => (e.id === entry.id ? { ...e, commit: r.commit } : e)) });
         if (!r.changed) ctx.log('提交没有变化；已跳过依赖与素材同步（需要时可勾选「即使没有新提交也重新同步依赖与素材」）。', 'meta');
       },
+    },
+    {
+      ...dependencyStep(dir),
+      when: () => changed || resync,
     },
     {
       ...nodeStep('同步依赖与素材', setupArgs(), dir, { env: setupEnv() }),
@@ -1271,6 +1352,10 @@ const actions = {
           config = patchConfig({ installs: (config.installs || []).map((e) => (e.id === entry.id ? { ...e, commit: r.commit } : e)) });
           if (!r.changed) ctx.log('提交没有变化；已跳过依赖与素材同步（需要时可勾选「即使没有新提交也重新同步」）。', 'meta');
         },
+      },
+      {
+        ...dependencyStep(dir),
+        when: () => changed || resync,
       },
       {
         ...nodeStep('同步依赖与素材', setupArgs(), dir, { env: setupEnv() }),

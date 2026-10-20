@@ -15,10 +15,60 @@ import {
 } from './util.mjs';
 import { sourceById, installDirOf, assetRouteOf, ROOT } from './config.mjs';
 
-const RUNTIME_PACKAGES = ['ws', 'pixi.js', 'pixi-spine', 'preact', 'htm'];
-const VENDOR_REQUIRED = ['pixi.min.js', 'pixi-spine.js', 'preact.module.js', 'hooks.module.js', 'htm.module.js'];
+// Fallbacks for a tree whose own manifests cannot be read (first deploy before the clone, damaged file).
+const LEGACY_RUNTIME_PACKAGES = ['ws', 'pixi.js', 'pixi-spine', 'preact', 'htm'];
+const LEGACY_VENDOR_REQUIRED = ['pixi.min.js', 'pixi-spine.js', 'preact.module.js', 'hooks.module.js', 'htm.module.js'];
 // Never overwritten by an archive-based update: they hold multi-hundred-MB downloads.
 const PRESERVE_ON_REPLACE = ['node_modules', '.cache', '.venv-extract', 'public/assets', 'public/fonts', 'public/vendor'];
+
+const readText = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } };
+
+/**
+ * Runtime packages the install itself declares (`package.json` dependencies).
+ *
+ * This used to be a hardcoded list, which is exactly how 「修复安装」 could report success on a broken
+ * install: upstream 0.3.1 added `acorn` and `ses`, the list did not know them, the completeness check
+ * passed, npm never ran — and the server then died on `import … from 'acorn'`. Deriving the list means
+ * the next dependency upstream adds is covered without a launcher release.
+ */
+export function runtimePackages(dir) {
+  const pkg = readJson(path.join(dir, 'package.json'), null);
+  const deps = pkg && pkg.dependencies && typeof pkg.dependencies === 'object' ? Object.keys(pkg.dependencies) : [];
+  return deps.length ? deps : LEGACY_RUNTIME_PACKAGES;
+}
+
+/**
+ * Vendor files the install's own `tools/vendor.mjs` copies into `public/vendor`, split into required and
+ * optional. Parsed from its `VENDOR_FILES` table (each row is `['node_modules/…', '<name>'[, true]]`) for
+ * the same reason as `runtimePackages` — 0.3.1's `ses.umd.js` / `acorn.mjs` were invisible to the old list.
+ */
+export function vendorFiles(dir) {
+  const src = readText(path.join(dir, 'tools', 'vendor.mjs'));
+  const required = [];
+  const optional = [];
+  if (src) {
+    const re = /\[\s*['"]node_modules\/[^'"]+['"]\s*,\s*['"]([^'"]+)['"]\s*(?:,\s*(true|false))?\s*\]/g;
+    for (const m of src.matchAll(re)) (m[2] === 'true' ? optional : required).push(m[1]);
+  }
+  return required.length ? { required, optional } : { required: LEGACY_VENDOR_REQUIRED, optional: [] };
+}
+
+/**
+ * `package-lock.json` written after `node_modules/.package-lock.json` means the tree predates the declared
+ * dependency set (e.g. a git update that added a package). Only meaningful when both files exist: a
+ * release package may ship `node_modules` without npm's marker and must not look stale forever.
+ */
+function lockNewerThanInstall(dir) {
+  const lock = path.join(dir, 'package-lock.json');
+  const marker = path.join(dir, 'node_modules', '.package-lock.json');
+  try { return fs.statSync(lock).mtimeMs > fs.statSync(marker).mtimeMs + 2000; } catch { return false; }
+}
+
+/** Declared packages that are not installed, plus whether the lock file outranks the installed tree. */
+export function depsState(dir) {
+  const missing = runtimePackages(dir).filter((p) => !exists(path.join(dir, 'node_modules', ...p.split('/'), 'package.json')));
+  return { missing, stale: lockNewerThanInstall(dir), hasNodeModules: exists(path.join(dir, 'node_modules')) };
+}
 
 /** Absolute path of the game install for this config. */
 export const gameDir = (cfg) => installDirOf(cfg);
@@ -31,6 +81,23 @@ export function npmCommand() {
   const beside = path.join(path.dirname(process.execPath), IS_WIN ? 'npm.cmd' : 'npm');
   if (exists(beside)) return beside;
   return which(IS_WIN ? 'npm.cmd' : 'npm') || which('npm');
+}
+
+/**
+ * How to spawn npm so an install path with spaces survives.
+ *
+ * On Windows `npm` is a `.cmd` shim, which forces `shell: true` — and Node's shell mode concatenates the
+ * program path without quoting, so `C:\Program Files\nodejs\npm.cmd` becomes `C:\Program`, which cmd.exe
+ * rejects. Running npm's JavaScript entry point with the current node keeps `shell` off entirely.
+ * @returns {{cmd:string,args:string[],shell:boolean}|null}
+ */
+export function npmInvocation() {
+  const npm = npmCommand();
+  if (!npm) return null;
+  const cli = path.join(path.dirname(npm), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (exists(cli)) return { cmd: process.execPath, args: [cli], shell: false };
+  // Fallback shim: quote it, because shell mode will not do that for us.
+  return { cmd: IS_WIN ? `"${npm}"` : npm, args: [], shell: IS_WIN && /\.(cmd|bat)$/i.test(npm) };
 }
 
 export function gitCommand() { return which('git'); }
@@ -69,7 +136,7 @@ export function inspectInstall(cfg) {
   const dir = gameDir(cfg);
   const info = {
     dir, exists: exists(dir), isRepo: false, hasPackageJson: false, packageVersion: null,
-    hasNodeModules: false, missingPackages: [], hasVendor: false, missingVendor: [],
+    hasNodeModules: false, missingPackages: [], depsStale: false, hasVendor: false, missingVendor: [], optionalMissingVendor: [],
     assets: { present: false, total: 0, sampled: 0, missing: 0, known: false },
     local: localArtState(dir),
     sizeBytes: 0, ready: false, hasGit: !!gitCommand(), hasTar: hasCommand('tar'),
@@ -79,13 +146,18 @@ export function inspectInstall(cfg) {
   const pkg = readJson(path.join(dir, 'package.json'), null);
   info.hasPackageJson = !!pkg;
   info.packageVersion = pkg?.version ?? null;
-  info.missingPackages = RUNTIME_PACKAGES.filter((p) => !exists(path.join(dir, 'node_modules', ...p.split('/'), 'package.json')));
-  info.hasNodeModules = info.missingPackages.length === 0;
-  info.missingVendor = VENDOR_REQUIRED.filter((f) => !exists(path.join(dir, 'public', 'vendor', f)));
+  const deps = depsState(dir);
+  info.missingPackages = deps.missing;
+  info.depsStale = deps.stale;
+  info.hasNodeModules = deps.missing.length === 0;
+  const vendor = vendorFiles(dir);
+  info.missingVendor = vendor.required.filter((f) => !exists(path.join(dir, 'public', 'vendor', f)));
+  info.optionalMissingVendor = vendor.optional.filter((f) => !exists(path.join(dir, 'public', 'vendor', f)));
   info.hasVendor = info.missingVendor.length === 0;
   info.assets = assetStats(dir);
   try { info.sizeBytes = dirSize(dir, 4000); } catch { info.sizeBytes = 0; }
-  info.ready = info.hasPackageJson && info.hasNodeModules && info.hasVendor;
+  // A stale lock file is not "missing", but it is not ready either: the next start must reinstall first.
+  info.ready = info.hasPackageJson && info.hasNodeModules && !info.depsStale && info.hasVendor;
   return info;
 }
 
